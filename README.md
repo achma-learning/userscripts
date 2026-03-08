@@ -25,6 +25,6 @@ a collection of good userscripts
 9. Greasy Fork tweaks: https://greasyfork.org/en/scripts/368183-greasy-fork-tweaks
 10. GreasyFork Bullshit Filter : https://greasyfork.org/en/scripts/12179-greasyfork-bull-filter
 11. theme (try to make you own fork form this) : https://greasyfork.org/en/scripts/4336-ts-citrus-gfork | licence (https://raw.githubusercontent.com/TimidScript/UserScripts/refs/heads/master/license.txt)
-
+12.	https://greasyfork.org/en/scripts/498904-script-finder
 8. https://github.com/AdguardTeam/AdGuardExtra
 9. https://adsbypasser.github.io/
