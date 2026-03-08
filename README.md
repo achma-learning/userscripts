@@ -1,4 +1,4 @@
-# userscripts
+# userscripts (try to make a way to sync script)
 how about a new website, that aggregate result from differnt userscript provider :
 such as main one :
 	https://userscripts-mirror.org/
