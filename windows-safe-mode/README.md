@@ -1,73 +1,111 @@
-# Faraday Mode — one-click Windows hardening toggle
+# Faraday Mode — Windows hardening with a tray-bar mode switcher
 
-A pair of scripts that put a Windows 10/11 PC into a *Faraday-cage-like*
-lockdown: total firewall block, every remote-management service stopped,
-classic protocol attack surface (SMBv1, NetBIOS, LLMNR, mDNS, WPAD) torn
-down, NTLM hardened, telemetry silenced. A small tray-bar shield shows
-that the mode is active. **Run the same `.bat` again to fully revert.**
+A drop-in lockdown toggle for Windows 10/11, modeled after the WFC
+"High Filtering" UX:
+
+- One scheduled task re-applies **Safe Mode** at every boot (runs as
+  `SYSTEM`, no UAC prompt).
+- A second scheduled task launches a tray-bar shield at every logon.
+- Right-click the shield to switch **Safe / Normal**, open the backup
+  folder, or uninstall everything.
+- Left-click the shield = toggle between the two modes.
+
+Backups of the previous firewall config and every touched service's
+start type are kept under `%ProgramData%\FaradayMode\backup\`, so
+**Normal Mode** restores the machine bit-for-bit.
 
 ## Files
 
-| File              | Purpose                                                  |
-|-------------------|----------------------------------------------------------|
-| `FaradayMode.bat` | Self-elevating toggle (enable on first run, disable on second). |
-| `tray.ps1`        | Hidden PowerShell that paints the tray-bar shield icon.  |
+| File              | Purpose                                                        |
+|-------------------|----------------------------------------------------------------|
+| `FaradayMode.bat` | Self-elevating state changer (`safe` / `normal` / `boot` / `toggle` / `install` / `uninstall` / `status`). |
+| `install.ps1`     | Registers the two scheduled tasks, applies safe mode, launches tray. |
+| `uninstall.ps1`   | Unregisters tasks, kills the tray, reverts to normal.          |
+| `tray.ps1`        | Tray-bar shield + mode-switcher menu, polls state every 1.5 s. |
 
-Keep them in the same folder.
+Keep all four files in the same folder. The scheduled tasks are
+registered with the **absolute path of the folder you install from**,
+so don't move it afterwards (just uninstall, move, reinstall).
 
-## Usage
+## Install / uninstall
 
-1. Right-click `FaradayMode.bat` → **Run as administrator** (it will also
-   self-elevate if you just double-click it).
-2. A shield appears in the tray bar — Faraday Mode is on.
-3. Run the same `.bat` again (or right-click the shield → *Disable
-   Faraday Mode*) to restore everything.
+Right-click `FaradayMode.bat` → **Run as administrator**, then:
 
-## What gets locked down
+```bat
+FaradayMode.bat install
+```
 
-- **Windows Firewall** — default policy switched to *block inbound and
-  outbound* on all profiles. Loopback (`127.0.0.1`) is whitelisted so
-  local apps still work. Explicit deny rules for the high-risk ports:
-  135, 137, 138, 139, 445, 593, 1433, 1434, 3389, 5040, 5353, 5355,
-  5985, 5986.
+Effects:
+
+1. Registers `FaradayMode\Boot` (SYSTEM, `AtStartup`, runs `FaradayMode.bat boot`).
+2. Registers `FaradayMode\Tray` (current user, `AtLogOn`, runs `tray.ps1`).
+3. Applies Safe Mode immediately.
+4. Launches the tray for the current session.
+
+To remove everything:
+
+```bat
+FaradayMode.bat uninstall
+```
+
+…or click **Uninstall (revert + remove autostart)** in the tray menu.
+
+## Tray controls
+
+| Action                | Effect                                                        |
+|-----------------------|---------------------------------------------------------------|
+| Left-click shield     | Toggle Safe ↔ Normal (UAC prompts).                           |
+| Right-click → Safe    | Force Safe Mode.                                              |
+| Right-click → Normal  | Force Normal Mode.                                            |
+| Right-click → Open backup folder | Opens `%ProgramData%\FaradayMode\backup`.          |
+| Right-click → Uninstall | Confirms, then full uninstall + revert.                     |
+| Right-click → Quit tray | Closes the tray (boot/logon tasks remain).                  |
+
+Icon: **Shield** = Safe, **Information** = Normal. Hover tooltip shows
+the active mode.
+
+## What "Safe Mode" actually does
+
+- **Windows Firewall** — default policy `block in / block out` on every
+  profile. Loopback whitelisted. Explicit deny rules for ports 135,
+  137-139, 445, 593, 1433-1434, 3389, 5040, 5353, 5355, 5985, 5986.
 - **Services stopped + disabled** — `TermService`, `SessionEnv`,
   `UmRdpService`, `WinRM`, `RemoteRegistry`, `RemoteAccess`,
   `SharedAccess`, `Spooler`, `SSDPSRV`, `upnphost`, `fdPHost`,
   `FDResPub`, `LanmanServer`, `WebClient`, `DiagTrack`,
   `dmwappushservice`, `RasMan`, `TlntSvr`, `SNMP`, `Fax`,
   `WinHttpAutoProxySvc`.
-- **Remote login** — RDP off (`fDenyTSConnections=1`), Remote Assistance
-  off, PowerShell Remoting disabled.
-- **Legacy protocols** — SMBv1 off, NetBIOS-over-TCP off on every NIC,
-  LLMNR off, mDNS off, WPAD off.
-- **Authentication** — `NoLMHash=1`, `RestrictSendingNTLMTraffic=2`,
-  `RestrictReceivingNTLMTraffic=2`, `LmCompatibilityLevel=5`.
-- **Misc** — AutoRun/AutoPlay off, Windows Error Reporting off, CEIP off,
-  telemetry policy = 0.
-- **Caches** — DNS, ARP, NetBIOS name caches all flushed.
+- **Remote login** — RDP, Remote Assistance, PowerShell Remoting all off.
+- **Legacy network** — SMBv1, NetBIOS-over-TCP (per-NIC), LLMNR, mDNS,
+  WPAD all off.
+- **Authentication** — `NoLMHash=1`, `LmCompatibilityLevel=5`,
+  `RestrictSendingNTLMTraffic=2`, `RestrictReceivingNTLMTraffic=2`.
+- **Misc** — AutoRun/AutoPlay off, telemetry policy = 0, Windows Error
+  Reporting off, CEIP off.
+- **Caches** — DNS / ARP / NetBIOS name caches all flushed.
 
-## What gets backed up
+## What "Normal Mode" does
 
-Stored in `%ProgramData%\FaradayMode\backup\`:
+- Re-imports the saved firewall configuration (`firewall.wfw`).
+- Restores every service to its **previously recorded** start type
+  (`auto` / `demand` / `disabled` / `system` / `boot`).
+- Removes the registry keys the script added; resets NetBIOS to its
+  default value (`0` = use DHCP).
 
-- `firewall.wfw` — full export of the previous firewall configuration
-  (re-imported with `netsh advfirewall import` on disable).
-- `services.txt` — original `START_TYPE` of every touched service, so
-  disable restores each to its prior `auto` / `demand` / `disabled`
-  setting instead of guessing.
+## Boot behavior
 
-`%ProgramData%\FaradayMode\state.flag` is the on/off marker.
-`%ProgramData%\FaradayMode\tray.pid` is the PID of the tray helper so
-disable can `taskkill` it cleanly.
+The boot task runs `FaradayMode.bat boot` as `SYSTEM` at every startup.
+If you switched to Normal during the previous session, the next reboot
+silently puts you back into Safe — matching WFC's "default-on-boot"
+philosophy.
 
-## Notes / caveats
+## Caveats
 
-- **You will lose internet** while Faraday Mode is on — that is the
-  point. Re-run the `.bat` (or use the tray menu) to come back online.
-- A reboot after disabling is recommended — some service-state changes
-  only fully reset on next boot.
-- Domain-joined machines may need additional GPO-level reverts; the
-  script only touches the local registry and SCM.
+- Internet is **completely unreachable** in Safe Mode (loopback only).
+  That's the entire point. Use the tray to come back to Normal.
+- A reboot after `uninstall` is recommended — some service-state
+  changes only fully revert on next boot.
+- Domain-joined machines may need GPO-level reverts beyond what the
+  script touches.
 - Tested on Windows 10 22H2 and Windows 11 23H2/24H2. Older builds may
-  not expose every service named above; `sc` errors on missing services
-  are silently ignored.
+  be missing some named services; `sc` errors are silently ignored.
