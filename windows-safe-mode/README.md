@@ -29,7 +29,8 @@ so don't move it afterwards (just uninstall, move, reinstall).
 
 ## Install / uninstall
 
-Right-click `FaradayMode.bat` → **Run as administrator**, then:
+**Just double-click `FaradayMode.bat`** — it self-elevates (you'll get
+one UAC prompt) and runs the full installer by default. Equivalent to:
 
 ```bat
 FaradayMode.bat install

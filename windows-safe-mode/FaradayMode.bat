@@ -5,19 +5,22 @@ title Faraday Mode
 REM =====================================================================
 REM  FaradayMode.bat - Windows hardening toggle (Safe Mode / Normal Mode)
 REM
+REM  Default (no args, e.g. double-click) = full INSTALL.  This is the
+REM  setup-style behaviour: it registers the boot + logon scheduled
+REM  tasks, applies safe mode immediately, and launches the tray.
+REM
 REM  Sub-commands:
+REM    install    (default) Register tasks, apply safe mode, launch tray.
+REM    uninstall  Unregister tasks, kill tray, revert to normal mode.
 REM    safe       Apply lockdown (idempotent). Used at boot too.
 REM    normal     Restore everything from backup (idempotent).
 REM    boot       Alias of "safe" - invoked by the boot scheduled task.
-REM    toggle     Flip current state.  (default if no arg given)
-REM    install    Register boot + logon scheduled tasks, apply safe mode,
-REM               and launch tray for the current user.
-REM    uninstall  Unregister tasks, apply normal mode, kill tray.
+REM    toggle     Flip current state without touching scheduled tasks.
 REM    status     Print current state and exit.
 REM =====================================================================
 
 set "CMD=%~1"
-if "%CMD%"=="" set "CMD=toggle"
+if "%CMD%"=="" set "CMD=install"
 
 REM ---- self-elevate (skipped if already admin / SYSTEM) ---------------
 net session >nul 2>&1
@@ -72,10 +75,20 @@ echo  ==========================================
 echo.
 if not exist "%INSTALLPS1%" (
     echo install.ps1 not found beside the .bat - aborting.
+    pause
     exit /b 2
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALLPS1%" -BatPath "%~f0" -TrayPath "%~dp0tray.ps1"
-exit /b %errorlevel%
+set "RC=%errorlevel%"
+echo.
+if %RC% equ 0 (
+    echo  [+] Faraday Mode installed. Look for the shield in the tray.
+) else (
+    echo  [!] Install failed with code %RC%.
+)
+echo.
+pause
+exit /b %RC%
 
 REM =====================================================================
 :UNINSTALL
@@ -86,10 +99,14 @@ echo  ==========================================
 echo.
 if not exist "%UNINSTALLPS1%" (
     echo uninstall.ps1 not found beside the .bat - aborting.
+    pause
     exit /b 2
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%UNINSTALLPS1%" -BatPath "%~f0"
-exit /b %errorlevel%
+set "RC=%errorlevel%"
+echo.
+pause
+exit /b %RC%
 
 REM =====================================================================
 :ENABLE
