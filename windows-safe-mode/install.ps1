@@ -27,7 +27,9 @@ if (-not (Test-Path -LiteralPath $BatPath))  { throw "Bat not found:  $BatPath" 
 if (-not (Test-Path -LiteralPath $TrayPath)) { throw "Tray not found: $TrayPath" }
 
 Write-Host "[*] Registering scheduled task: FaradayMode\Boot ..."
-$bootArg       = "/c `"`"$BatPath`"`" boot"
+# Use `cmd /c call "<path>" boot` so cmd's quote-stripping rules cannot
+# mangle paths that contain spaces or parentheses.
+$bootArg       = "/c call `"$BatPath`" boot"
 $bootAction    = New-ScheduledTaskAction    -Execute 'cmd.exe' -Argument $bootArg
 $bootTrigger   = New-ScheduledTaskTrigger   -AtStartup
 $bootPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
@@ -49,9 +51,23 @@ Write-Host "[*] Applying safe mode now ..."
 & $BatPath 'safe' | Out-Null
 
 Write-Host "[*] Launching tray for current session ..."
-Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList @('-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',$TrayPath,'-BatPath',$BatPath) `
-    -WindowStyle Hidden | Out-Null
+# Start-Process -ArgumentList @(...) does NOT auto-quote items with
+# spaces, which fails when the install path contains spaces or
+# parentheses (e.g. "...\New folder\userscripts-main (1)\..."). Build a
+# single, explicitly-quoted command line and launch via ProcessStartInfo.
+$trayCmdLine = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$TrayPath`" -BatPath `"$BatPath`""
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName        = 'powershell.exe'
+$psi.Arguments       = $trayCmdLine
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow  = $true
+$psi.WindowStyle     = [System.Diagnostics.ProcessWindowStyle]::Hidden
+try {
+    [void][System.Diagnostics.Process]::Start($psi)
+} catch {
+    Write-Warning "Could not auto-launch the tray ($($_.Exception.Message))."
+    Write-Warning "It will start automatically at next logon via the FaradayMode\Tray task."
+}
 
 Write-Host ""
 Write-Host "  Faraday Mode installed."
