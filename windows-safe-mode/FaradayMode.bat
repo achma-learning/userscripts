@@ -19,13 +19,32 @@ REM    toggle     Flip current state without touching scheduled tasks.
 REM    status     Print current state and exit.
 REM =====================================================================
 
-set "CMD=%~1"
+set "ELEVATED="
+if /i "%~1"=="--elevated" (
+    set "ELEVATED=1"
+    set "CMD=%~2"
+) else (
+    set "CMD=%~1"
+)
 if "%CMD%"=="" set "CMD=install"
 
-REM ---- self-elevate (skipped if already admin / SYSTEM) ---------------
-net session >nul 2>&1
+REM ---- admin check ----------------------------------------------------
+REM   Do NOT use `net session` here: Faraday Mode disables LanmanServer,
+REM   which makes `net session` return non-zero even when we ARE admin,
+REM   producing an infinite self-elevation loop.  fsutil dirty query is
+REM   admin-only and does not depend on any service we touch.
+fsutil dirty query %systemdrive% >nul 2>&1
 if %errorlevel% neq 0 (
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%CMD%' -Verb RunAs"
+    if defined ELEVATED (
+        echo.
+        echo  [!] UAC elevation did not give this process admin rights.
+        echo      Right-click FaradayMode.bat ^-^> Run as administrator.
+        echo.
+        pause
+        exit /b 1
+    )
+    echo Requesting administrator privileges...
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '--elevated %CMD%' -Verb RunAs"
     exit /b
 )
 
