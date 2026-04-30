@@ -133,7 +133,17 @@ netsh advfirewall export "%FWBACKUP%" >nul
 copy /y "%HOSTS%" "%HOSTSBACKUP%" >nul 2>&1
 
 > "%SVCBACKUP%" echo # FaradayMode service backup
-for %%S in (TermService SessionEnv UmRdpService WinRM RemoteRegistry RemoteAccess SharedAccess Spooler SSDPSRV upnphost fdPHost FDResPub LanmanServer WebClient DiagTrack dmwappushservice RasMan TlntSvr SNMP Fax RasAuto iphlpsvc WinHttpAutoProxySvc) do (
+for %%S in (
+    TermService SessionEnv UmRdpService WinRM RemoteRegistry RemoteAccess
+    SharedAccess Spooler SSDPSRV upnphost fdPHost FDResPub LanmanServer
+    WebClient DiagTrack dmwappushservice RasMan TlntSvr SNMP Fax RasAuto
+    iphlpsvc WinHttpAutoProxySvc
+    vmms vmcompute HvHost vmickvpexchange vmicguestinterface vmicshutdown
+    vmicheartbeat vmicrdv vmictimesync vmicvss
+    SstpSvc IKEEXT WwanSvc PolicyAgent
+    WlanSvc bthserv BTAGService BluetoothUserService BthHFSrv NcdAutoSetup
+    NcaSvc NetTcpPortSharing
+) do (
     for /f "tokens=2*" %%A in ('sc qc "%%S" 2^>nul ^| find "START_TYPE"') do (
         >> "%SVCBACKUP%" echo %%S=%%B
     )
@@ -208,6 +218,61 @@ for %%S in (TermService SessionEnv UmRdpService WinRM RemoteRegistry RemoteAcces
     sc stop   "%%S" >nul 2>&1
     sc config "%%S" start= disabled >nul 2>&1
 )
+
+REM ---- Hyper-V : stop the VM-management plane ------------------------
+REM   (We keep VBS / HVCI / Credential Guard - those USE the hypervisor
+REM    to protect the OS. We only stop the host-side VM management and
+REM    integration services, and tear down external vSwitches that
+REM    bridge to a physical NIC.)
+echo [*] Stopping Hyper-V VM management + integration services...
+for %%S in (vmms vmcompute HvHost vmickvpexchange vmicguestinterface vmicshutdown vmicheartbeat vmicrdv vmictimesync vmicvss) do (
+    sc stop   "%%S" >nul 2>&1
+    sc config "%%S" start= disabled >nul 2>&1
+)
+echo [*] Disabling Hyper-V vSwitch host adapters (vEthernet*)...
+powershell -NoProfile -Command "Get-NetAdapter -Name 'vEthernet*' -ErrorAction SilentlyContinue | Disable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" 2>nul
+
+REM ---- VPN : tear down + lock out ------------------------------------
+echo [*] Disconnecting all active VPN/dial-up connections...
+rasdial /disconnect >nul 2>&1
+powershell -NoProfile -Command "Get-VpnConnection -ErrorAction SilentlyContinue | ForEach-Object { rasdial $_.Name /disconnect }" 2>nul
+
+echo [*] Stopping VPN client / IPsec / mobile-broadband services...
+REM   IKEEXT  = IKE + AuthIP IPsec keying (kills IPsec/L2TP/IKEv2 tunnels)
+REM   SstpSvc = SSTP VPN tunnel service
+REM   WwanSvc = mobile broadband (cellular)
+REM   PolicyAgent = IPsec Policy Agent
+REM   (BFE is intentionally NOT touched - the Windows Firewall needs it.)
+for %%S in (SstpSvc IKEEXT WwanSvc PolicyAgent RasAuto) do (
+    sc stop   "%%S" >nul 2>&1
+    sc config "%%S" start= disabled >nul 2>&1
+)
+
+REM Block PPTP entirely via the protocols-allowed mask (RasMan).
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Rasman\Parameters" /v ProhibitIpSec /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\PptpMiniport"      /v Start         /t REG_DWORD /d 4 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\L2tpMiniport"      /v Start         /t REG_DWORD /d 4 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\SstpMiniport"      /v Start         /t REG_DWORD /d 4 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\AgileVpn"          /v Start         /t REG_DWORD /d 4 /f >nul 2>&1
+
+REM ---- VIRTUAL FARADAY CAGE: disable every radio + NIC ---------------
+REM   This is the "no electrons leave the machine" step.  We snapshot
+REM   which adapters were UP so Normal Mode brings exactly those back.
+echo [*] Snapshotting UP adapters and disabling every physical NIC...
+powershell -NoProfile -Command "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | Select-Object -ExpandProperty Name | Out-File -FilePath '%BACKUP%\adapters.txt' -Encoding ASCII -Force" 2>nul
+powershell -NoProfile -Command "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Disable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" 2>nul
+
+echo [*] Disabling Bluetooth, Wi-Fi, NFC, IR, mobile broadband radios...
+REM Snapshot currently-enabled radio/IR/NFC PnP devices, then disable.
+powershell -NoProfile -Command "Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'OK' -and ($_.Class -eq 'Bluetooth' -or $_.Class -eq 'Net' -or $_.FriendlyName -match 'NFC|Infrared|Wireless|WiFi|WLAN|Bluetooth|Modem|Cellular|WWAN') } | Select-Object -ExpandProperty InstanceId | Out-File -FilePath '%BACKUP%\radios.txt' -Encoding ASCII -Force" 2>nul
+powershell -NoProfile -Command "if (Test-Path '%BACKUP%\radios.txt') { Get-Content -LiteralPath '%BACKUP%\radios.txt' | ForEach-Object { Disable-PnpDevice -InstanceId $_ -Confirm:$false -ErrorAction SilentlyContinue } }" 2>nul
+
+REM Soft-airplane-mode: also flip the radio kill-switch via WinRT
+REM (covers Wi-Fi/Bluetooth/cellular even if a driver re-enables itself).
+powershell -NoProfile -Command "try { [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null; $op = [Windows.Devices.Radios.Radio]::RequestAccessAsync(); while ($op.Status -eq 0) { Start-Sleep -Milliseconds 50 }; $get = [Windows.Devices.Radios.Radio]::GetRadiosAsync(); while ($get.Status -eq 0) { Start-Sleep -Milliseconds 50 }; foreach ($r in $get.GetResults()) { $set = $r.SetStateAsync('Off'); while ($set.Status -eq 0) { Start-Sleep -Milliseconds 50 } } } catch {}" 2>nul
+
+REM Block magic-packet wake on every adapter so we cannot be remotely woken.
+powershell -NoProfile -Command "Get-NetAdapter -ErrorAction SilentlyContinue | ForEach-Object { try { Disable-NetAdapterPowerManagement -Name $_.Name -ErrorAction SilentlyContinue } catch {} }" 2>nul
 
 REM ---- Remote-login surfaces -----------------------------------------
 echo [*] Disabling RDP, Remote Assistance, PSRemoting...
@@ -298,6 +363,27 @@ if exist "%SVCBACKUP%" (
         if not "%%A"=="" call :RESTORE_SVC "%%A" "%%B"
     )
 )
+
+REM ---- Lift the Faraday cage -----------------------------------------
+echo [*] Re-enabling radios (Bluetooth / Wi-Fi / NFC / cellular)...
+powershell -NoProfile -Command "if (Test-Path '%BACKUP%\radios.txt') { Get-Content -LiteralPath '%BACKUP%\radios.txt' | ForEach-Object { Enable-PnpDevice -InstanceId $_ -Confirm:$false -ErrorAction SilentlyContinue } }" 2>nul
+powershell -NoProfile -Command "try { [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null; $op = [Windows.Devices.Radios.Radio]::RequestAccessAsync(); while ($op.Status -eq 0) { Start-Sleep -Milliseconds 50 }; $get = [Windows.Devices.Radios.Radio]::GetRadiosAsync(); while ($get.Status -eq 0) { Start-Sleep -Milliseconds 50 }; foreach ($r in $get.GetResults()) { $set = $r.SetStateAsync('On'); while ($set.Status -eq 0) { Start-Sleep -Milliseconds 50 } } } catch {}" 2>nul
+
+echo [*] Re-enabling network adapters that were UP before Safe Mode...
+if exist "%BACKUP%\adapters.txt" (
+    powershell -NoProfile -Command "Get-Content -LiteralPath '%BACKUP%\adapters.txt' | Where-Object { $_ -ne '' } | ForEach-Object { Enable-NetAdapter -Name $_ -Confirm:$false -ErrorAction SilentlyContinue }" 2>nul
+)
+
+REM ---- Re-enable Hyper-V vSwitch host adapters -----------------------
+echo [*] Re-enabling Hyper-V vSwitch host adapters...
+powershell -NoProfile -Command "Get-NetAdapter -Name 'vEthernet*' -ErrorAction SilentlyContinue | Enable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" 2>nul
+
+REM ---- Unblock WAN miniport drivers (PPTP/L2TP/SSTP/IKEv2) -----------
+echo [*] Unblocking VPN tunnel drivers...
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\PptpMiniport" /v Start /t REG_DWORD /d 3 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\L2tpMiniport" /v Start /t REG_DWORD /d 3 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\SstpMiniport" /v Start /t REG_DWORD /d 3 /f >nul 2>&1
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\AgileVpn"     /v Start /t REG_DWORD /d 3 /f >nul 2>&1
 
 REM ---- Revert registry hardening --------------------------------------
 echo [*] Reverting registry hardening...
