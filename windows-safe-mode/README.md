@@ -92,6 +92,30 @@ block, `attrib -R` clears the flag).
 `dmwappushservice`, `RasMan`, `TlntSvr`, `SNMP`, `Fax`,
 `WinHttpAutoProxySvc`.
 
+### Hyper-V — VM management plane stopped, vSwitches torn down
+
+VBS / HVCI / Credential Guard are deliberately **kept on** — those use
+the hypervisor to *protect* the OS. What gets stopped:
+
+- Host-side VM management: `vmms`, `vmcompute`, `HvHost`.
+- Integration services: `vmickvpexchange`, `vmicguestinterface`,
+  `vmicshutdown`, `vmicheartbeat`, `vmicrdv`, `vmictimesync`, `vmicvss`.
+- All `vEthernet*` host adapters (the host-side endpoints of any
+  external Hyper-V vSwitch) are disabled — kills WSL2 / Docker-Desktop
+  / external VM networking while Safe Mode is on.
+
+### VPN — torn down, IPsec keying disabled, tunnel drivers blocked
+
+- All active VPN / dial-up connections dropped via `rasdial /disconnect`
+  + `Get-VpnConnection | rasdial … /disconnect`.
+- Services stopped + disabled: `IKEEXT` (IKE/AuthIP, kills L2TP/IKEv2
+  IPsec), `SstpSvc` (SSTP), `WwanSvc` (mobile broadband), `PolicyAgent`
+  (IPsec Policy Agent), `RasAuto`. **`BFE` is kept** — Windows Firewall
+  needs it.
+- WAN miniport drivers for `PptpMiniport`, `L2tpMiniport`,
+  `SstpMiniport`, and `AgileVpn` are set to `Start = 4` (disabled).
+  Restored to `Start = 3` (manual) on Normal Mode.
+
 ### Remote login
 
 RDP, Remote Assistance, PowerShell Remoting all off.
