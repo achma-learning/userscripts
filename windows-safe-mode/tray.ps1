@@ -56,13 +56,14 @@ $miWinSafeClr = New-Object System.Windows.Forms.ToolStripMenuItem 'Reboot normal
 [void]$miRestart.DropDownItems.AddRange(@($miWinSafeMin,$miWinSafeNet,$miWinSafeClr))
 
 $miSep3     = New-Object System.Windows.Forms.ToolStripSeparator
+$miAudit    = New-Object System.Windows.Forms.ToolStripMenuItem 'Security audit...'
 $miSetPw    = New-Object System.Windows.Forms.ToolStripMenuItem 'Change password...'
 $miOpen     = New-Object System.Windows.Forms.ToolStripMenuItem 'Open backup folder'
 $miUninst   = New-Object System.Windows.Forms.ToolStripMenuItem 'Uninstall (revert + remove autostart)'
 $miSep4     = New-Object System.Windows.Forms.ToolStripSeparator
 $miQuit     = New-Object System.Windows.Forms.ToolStripMenuItem 'Quit tray'
 
-[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miLite,$miNormal,$miSep2,$miRestart,$miSep3,$miSetPw,$miOpen,$miUninst,$miSep4,$miQuit))
+[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miLite,$miNormal,$miSep2,$miRestart,$miSep3,$miAudit,$miSetPw,$miOpen,$miUninst,$miSep4,$miQuit))
 $icon.ContextMenuStrip = $ctx
 
 function Invoke-Bat([string]$arg) {
@@ -91,6 +92,7 @@ $miWinSafeMin.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode (Min
 $miWinSafeNet.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode with Networking.')        { Invoke-Bat 'winsafe-net'   } })
 $miWinSafeClr.Add_Click({ if (Confirm-Reboot 'Clear Safe Boot flag and reboot normally into Windows.') { Invoke-Bat 'winsafe-clear' } })
 $miSetPw.Add_Click(     { Invoke-Bat 'setpw' })
+$miAudit.Add_Click(     { Invoke-Bat 'audit' })
 
 # Left-click cycles: Normal -> High Light -> High Filtering -> Normal ...
 $icon.Add_MouseClick({

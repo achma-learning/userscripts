@@ -109,6 +109,49 @@ Windows defaults without breaking everyday work.
 - **DNS / hosts / NICs / radios** — *not* touched. Internet works
   normally.
 
+## Anti-kernel-attack hardening (applied in High Filtering, subset in High Light)
+
+Compensates for VBS / HVCI / Credential Guard being off in High
+Filtering by closing the same attack classes at user-mode and
+kernel-blocklist level. Run `FaradayMode.bat audit` (or *Security
+audit…* in the tray) to see the live status.
+
+| Tweak | Stops | Mode |
+|---|---|---|
+| `VulnerableDriverBlocklistEnable = 1` (Microsoft Vulnerable Driver Blocklist) | BYOVD kernel exploits (Lazarus, Scattered Spider, BlackByte, etc.) | HF + HL |
+| `RunAsPPL = 2` + `RunAsPPLBoot = 2` (LSA Protection) | Mimikatz / LSASS credential dumps | HF + HL |
+| Defender ASR rules (14 of them: block LSASS access, vulnerable signed drivers, Office macro escalation, JS/VBS download exec, persistence-via-WMI, untrusted USB, etc.) | User-mode → kernel privilege escalation | HF + HL |
+| `Disable-WindowsOptionalFeature MicrosoftWindows-PowerShellV2` + `WSH Enabled = 0` | PowerShell-v2 downgrade, `.vbs`/`.js` malware | HF only |
+| `Set-ProcessMitigation -System -Enable DEP,SEHOP,ForceRelocateImages,RandomizeMemoryAllocations,BottomUp,HighEntropy` | Userland exploit primitives (ROP/JOP, heap spray, ASLR bypass) | HF only |
+| `EnableScriptBlockLogging = 1`, `EnableModuleLogging = 1`, `EnableTranscripting = 1` | Lateral movement via PowerShell goes to Event Log | HF + HL |
+| `Set-MpPreference -EnableControlledFolderAccess Enabled` | Ransomware encryption of Documents/Pictures/Desktop | HF + HL |
+| `DenyDeviceClasses = 1` + `DeviceInstallDisabled = 1` + `AllowDmaUnderLock = 0` | Rogue USB / DMA attacks while machine is locked | HF only |
+| Audit-only: `Confirm-SecureBootUEFI`, `Get-BitLockerVolume`, `Get-Tpm` | Bootkits, cold-boot disk read | report-only |
+
+**Caveats / what these can break:**
+
+- **VDB** can refuse to load very old game anti-cheat or third-party
+  signed-but-vulnerable drivers. If a specific app stops working,
+  check Windows Event Log → Microsoft-Windows-CodeIntegrity.
+- **`RunAsPPL = 2`** blocks unsigned LSA security plugins. If your AV
+  has an LSA plugin (rare on consumer AVs), it may need to be re-signed
+  or excluded.
+- **ASR rules** can false-positive on dev tools (`mshta.exe`, custom
+  Python launchers, MSBuild). Switch to `AuditMode` first if you need
+  to investigate: `Set-MpPreference -AttackSurfaceReductionRules_Actions AuditMode`.
+- **`USB-install blocked`** prevents *new* USB devices from
+  installing drivers. Existing/known devices keep working.
+- **PowerShell v2 disabled** breaks the rare app still pinned to v2.
+- **System-wide `ForceRelocateImages`** breaks unsigned legacy
+  binaries that lack `/DYNAMICBASE`.
+
+Reverts on Normal Mode: USB/DMA policies, PowerShell v2, WSH, and
+process mitigations come back to Windows defaults. The pure-win
+items (VDB, RunAsPPL, ASR, ScriptBlock logging, Controlled Folder
+Access) are **kept on** even in Normal Mode — they're defense in
+depth that doesn't break normal usage. Uncomment the marked lines in
+`:DISABLE` if you want them off too.
+
 ## What "High Filtering" mode does
 
 ### Firewall — real block-all (this is the fix vs. v1)

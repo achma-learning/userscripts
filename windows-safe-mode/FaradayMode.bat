@@ -71,6 +71,7 @@ REM   When auth.dat does not exist yet (first run before install),
 REM   verification is skipped - install.ps1 will set the password.
 if /i "%CMD%"=="boot"     goto :SKIP_AUTH
 if /i "%CMD%"=="status"   goto :SKIP_AUTH
+if /i "%CMD%"=="audit"    goto :SKIP_AUTH
 if /i "%CMD%"=="install"  goto :SKIP_AUTH
 if not exist "%AUTHFILE%" goto :SKIP_AUTH
 if not exist "%AUTHPS1%"  goto :SKIP_AUTH
@@ -97,6 +98,7 @@ if /i "%CMD%"=="winsafe-min"   goto :WINSAFE_MIN
 if /i "%CMD%"=="winsafe-net"   goto :WINSAFE_NET
 if /i "%CMD%"=="winsafe-clear" goto :WINSAFE_CLEAR
 if /i "%CMD%"=="setpw"         goto :SETPW
+if /i "%CMD%"=="audit"         goto :AUDIT
 if /i "%CMD%"=="toggle" (
     if exist "%STATE%" ( goto :SWITCH_NORMAL ) else ( goto :SWITCH_SAFE )
 )
@@ -403,6 +405,48 @@ reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection"          /v Al
 reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting"          /v Disabled          /t REG_DWORD /d 1   /f >nul
 reg add "HKLM\SOFTWARE\Policies\Microsoft\SQMClient\Windows"               /v CEIPEnable        /t REG_DWORD /d 0   /f >nul
 
+REM ===================================================================
+REM   ANTI-KERNEL-ATTACK HARDENING
+REM   Compensates for VBS/HVCI/Credential Guard being off by closing
+REM   the same attack classes at user-mode and kernel-blocklist level.
+REM ===================================================================
+
+echo [*] Microsoft Vulnerable Driver Blocklist (BYOVD defense)...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 1 /f >nul
+
+echo [*] LSA Protection (RunAsPPL = 2 - blocks Mimikatz-style LSASS dumps)...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPL     /t REG_DWORD /d 2 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPLBoot /t REG_DWORD /d 2 /f >nul
+
+echo [*] Defender Attack Surface Reduction rules (14 rules)...
+powershell -NoProfile -Command "Set-MpPreference -AttackSurfaceReductionRules_Ids @('9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2','56a863a9-875e-4185-98a7-b882c64b5ce5','be9ba2d9-53ea-4cdc-84e5-9b1eeee46550','d4f940ab-401b-4efc-aadc-ad5f3c50688a','75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84','d3e037e1-3eb8-44c8-a917-57927947596d','5beb7efe-fd9a-4556-801d-275e5ffc04cc','d1e49aac-8f56-4280-b9ba-993a6d77406c','92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b','e6db77e5-3df2-4cf1-b95a-636979351e5b','7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c','c1db55ab-c21a-4637-bb3f-a12568109d35','01443614-cd74-433a-b99e-2ecdc07bfc25','b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4') -AttackSurfaceReductionRules_Actions @('Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled') -ErrorAction SilentlyContinue" 2>nul
+
+echo [*] Disabling PowerShell v2 + Windows Script Host (.vbs/.js)...
+powershell -NoProfile -Command "Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindows-PowerShellV2     -NoRestart -ErrorAction SilentlyContinue" >nul 2>&1
+powershell -NoProfile -Command "Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindows-PowerShellV2Root -NoRestart -ErrorAction SilentlyContinue" >nul 2>&1
+reg add "HKLM\SOFTWARE\Microsoft\Windows Script Host\Settings"            /v Enabled /t REG_DWORD /d 0 /f >nul
+reg add "HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows Script Host\Settings" /v Enabled /t REG_DWORD /d 0 /f >nul 2>&1
+
+echo [*] PowerShell ScriptBlock + Module + Transcription logging on...
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" /v EnableScriptBlockLogging /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"      /v EnableModuleLogging      /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"      /v EnableTranscripting      /t REG_DWORD /d 1 /f >nul
+
+echo [*] Forcing system-wide process mitigations (DEP/SEHOP/ASLR/CFG)...
+powershell -NoProfile -Command "Set-ProcessMitigation -System -Enable DEP,SEHOP,ForceRelocateImages,RandomizeMemoryAllocations,BottomUp,HighEntropy -ErrorAction SilentlyContinue" 2>nul
+
+echo [*] Defender Controlled Folder Access (anti-ransomware)...
+powershell -NoProfile -Command "Set-MpPreference -EnableControlledFolderAccess Enabled -ErrorAction SilentlyContinue" 2>nul
+
+echo [*] Block new USB-device installation + DMA under lock...
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions" /v DenyDeviceClasses     /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions" /v DeviceInstallDisabled /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DmaSecurity"                   /v AllowDmaUnderLock     /t REG_DWORD /d 0 /f >nul
+
+echo [*] Verifying Secure Boot + BitLocker (audit only)...
+powershell -NoProfile -Command "try { if (Confirm-SecureBootUEFI -ErrorAction Stop) { Write-Host '    [OK] Secure Boot is ENABLED.' } else { Write-Host '    [!]  Secure Boot is DISABLED - enable it in BIOS/UEFI.' } } catch { Write-Host '    [-]  Secure Boot status unavailable.' }"
+powershell -NoProfile -Command "try { $bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop; if ($bl.ProtectionStatus -eq 'On') { Write-Host '    [OK] BitLocker is ON for the system drive.' } else { Write-Host '    [!]  BitLocker is OFF - consider enabling.' } } catch { Write-Host '    [-]  BitLocker module not available.' }"
+
 REM ---- Flush caches --------------------------------------------------
 ipconfig /flushdns >nul
 arp -d * >nul 2>&1
@@ -485,6 +529,36 @@ bcdedit /set "{current}" hypervisorlaunchtype auto >nul 2>&1
 reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v EnableVirtualizationBasedSecurity /f >nul 2>&1
 reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v Enabled /f >nul 2>&1
 reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LsaCfgFlags /f >nul 2>&1
+
+REM ---- Revert anti-kernel-attack hardening ---------------------------
+REM Most of these are kept ON in Normal mode too because they are
+REM defense-in-depth that does not break normal usage. Only the
+REM USB-install block + DMA-under-lock revert because they are
+REM annoying when you actually want to use a new USB device.
+echo [*] Lifting USB-install block + DMA lock policies...
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions" /v DenyDeviceClasses     /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions" /v DeviceInstallDisabled /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DmaSecurity"                   /v AllowDmaUnderLock     /f >nul 2>&1
+
+REM Re-enable PowerShell v2 + WSH so legacy scripts work in Normal mode.
+echo [*] Re-enabling PowerShell v2 + Windows Script Host...
+powershell -NoProfile -Command "Enable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindows-PowerShellV2 -NoRestart -ErrorAction SilentlyContinue" >nul 2>&1
+reg delete "HKLM\SOFTWARE\Microsoft\Windows Script Host\Settings"             /v Enabled /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Wow6432Node\Microsoft\Windows Script Host\Settings" /v Enabled /f >nul 2>&1
+
+REM We deliberately leave on (they are pure security wins, not annoying):
+REM   - VulnerableDriverBlocklistEnable
+REM   - RunAsPPL / RunAsPPLBoot
+REM   - PowerShell ScriptBlock / Module / Transcription logging
+REM   - Defender ASR rules
+REM   - Controlled Folder Access
+REM   - System-wide process mitigations
+REM If you really want them off, uncomment the lines below.
+REM reg delete "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /f >nul 2>&1
+REM reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPL     /f >nul 2>&1
+REM reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v RunAsPPLBoot /f >nul 2>&1
+REM powershell -NoProfile -Command "Remove-MpPreference -AttackSurfaceReductionRules_Ids @('9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2','56a863a9-875e-4185-98a7-b882c64b5ce5','be9ba2d9-53ea-4cdc-84e5-9b1eeee46550','d4f940ab-401b-4efc-aadc-ad5f3c50688a','75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84','d3e037e1-3eb8-44c8-a917-57927947596d','5beb7efe-fd9a-4556-801d-275e5ffc04cc','d1e49aac-8f56-4280-b9ba-993a6d77406c','92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b','e6db77e5-3df2-4cf1-b95a-636979351e5b','7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c','c1db55ab-c21a-4637-bb3f-a12568109d35','01443614-cd74-433a-b99e-2ecdc07bfc25','b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4') -ErrorAction SilentlyContinue" 2>nul
+REM powershell -NoProfile -Command "Set-MpPreference -EnableControlledFolderAccess Disabled -ErrorAction SilentlyContinue" 2>nul
 
 REM ---- Revert registry hardening --------------------------------------
 echo [*] Reverting registry hardening...
@@ -605,6 +679,16 @@ reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting"          /v Di
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient"            /v EnableMulticast   /t REG_DWORD /d 0 /f >nul
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters"       /v EnableMDNS        /t REG_DWORD /d 0 /f >nul
 
+REM ---- Anti-kernel-attack hardening (subset for High Light) ---------
+echo [*] VDB + LSA Protection + ASR rules + ScriptBlock logging...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa"       /v RunAsPPL                       /t REG_DWORD /d 2 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa"       /v RunAsPPLBoot                   /t REG_DWORD /d 2 /f >nul
+powershell -NoProfile -Command "Set-MpPreference -AttackSurfaceReductionRules_Ids @('9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2','56a863a9-875e-4185-98a7-b882c64b5ce5','be9ba2d9-53ea-4cdc-84e5-9b1eeee46550','d4f940ab-401b-4efc-aadc-ad5f3c50688a','75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84','d3e037e1-3eb8-44c8-a917-57927947596d','5beb7efe-fd9a-4556-801d-275e5ffc04cc','d1e49aac-8f56-4280-b9ba-993a6d77406c','92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b','e6db77e5-3df2-4cf1-b95a-636979351e5b','7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c','c1db55ab-c21a-4637-bb3f-a12568109d35','01443614-cd74-433a-b99e-2ecdc07bfc25','b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4') -AttackSurfaceReductionRules_Actions @('Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled','Enabled') -ErrorAction SilentlyContinue" 2>nul
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" /v EnableScriptBlockLogging /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"      /v EnableModuleLogging      /t REG_DWORD /d 1 /f >nul
+powershell -NoProfile -Command "Set-MpPreference -EnableControlledFolderAccess Enabled -ErrorAction SilentlyContinue" 2>nul
+
 ipconfig /flushdns >nul
 
 > "%STATE%" echo lite
@@ -656,6 +740,14 @@ del /q "%STATE%" >nul 2>&1
 echo.
 echo  [+] HIGH LIGHT disabled. Mode: NORMAL.
 echo.
+exit /b 0
+
+REM =====================================================================
+:AUDIT
+if not exist "%~dp0audit.ps1" ( echo audit.ps1 not found. & exit /b 2 )
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0audit.ps1"
+echo.
+pause
 exit /b 0
 
 REM =====================================================================
