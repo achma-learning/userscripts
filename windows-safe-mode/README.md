@@ -92,6 +92,29 @@ block, `attrib -R` clears the flag).
 `dmwappushservice`, `RasMan`, `TlntSvr`, `SNMP`, `Fax`,
 `WinHttpAutoProxySvc`.
 
+### Virtual Faraday cage — every radio + NIC physically disabled
+
+Blocking packets is not enough — Safe Mode also kills the layer below
+the firewall so no electrons leave the machine in the first place:
+
+- **Snapshot then disable every physical adapter.** `Get-NetAdapter
+  -Physical | Disable-NetAdapter` drops Ethernet, USB-Ethernet, Wi-Fi,
+  cellular. The names of adapters that were UP before are written to
+  `backup\adapters.txt` so Normal Mode brings exactly those back.
+- **Disable every radio / NFC / IR PnP device.** Snapshot to
+  `backup\radios.txt`, then `Disable-PnpDevice` each. Catches drivers
+  that the NetAdapter API does not surface.
+- **WinRT airplane-mode kill switch.** `[Windows.Devices.Radios.Radio]
+  ::SetStateAsync('Off')` on every detected radio — same path the
+  Settings → Airplane Mode toggle uses, so even if a driver flips
+  itself back on we have a redundant kill switch.
+- **Block Wake-on-Magic-Packet** with `Disable-NetAdapterPowerManagement`
+  on every adapter so the box cannot be remotely woken from S3/S4.
+- **Stop the radio stacks at the service layer:** `WlanSvc`, `bthserv`,
+  `BTAGService`, `BluetoothUserService`, `BthHFSrv`, `WwanSvc`. All are
+  in the services backup and come back to their original start mode on
+  Normal Mode.
+
 ### Hyper-V — VM management plane stopped, vSwitches torn down
 
 VBS / HVCI / Credential Guard are deliberately **kept on** — those use
