@@ -41,16 +41,31 @@ $miSep1     = New-Object System.Windows.Forms.ToolStripSeparator
 $miSafe     = New-Object System.Windows.Forms.ToolStripMenuItem 'Safe Mode (locked down)'
 $miNormal   = New-Object System.Windows.Forms.ToolStripMenuItem 'Normal Mode (open)'
 $miSep2     = New-Object System.Windows.Forms.ToolStripSeparator
+
+# Restart submenu (Windows OS-level Safe Boot via bcdedit).
+$miRestart  = New-Object System.Windows.Forms.ToolStripMenuItem 'Restart Windows'
+$miWinSafeMin = New-Object System.Windows.Forms.ToolStripMenuItem 'Reboot into Safe Mode (Minimal)'
+$miWinSafeNet = New-Object System.Windows.Forms.ToolStripMenuItem 'Reboot into Safe Mode with Networking'
+$miWinSafeClr = New-Object System.Windows.Forms.ToolStripMenuItem 'Reboot normally (clear Safe Boot)'
+[void]$miRestart.DropDownItems.AddRange(@($miWinSafeMin,$miWinSafeNet,$miWinSafeClr))
+
+$miSep3     = New-Object System.Windows.Forms.ToolStripSeparator
 $miOpen     = New-Object System.Windows.Forms.ToolStripMenuItem 'Open backup folder'
 $miUninst   = New-Object System.Windows.Forms.ToolStripMenuItem 'Uninstall (revert + remove autostart)'
-$miSep3     = New-Object System.Windows.Forms.ToolStripSeparator
+$miSep4     = New-Object System.Windows.Forms.ToolStripSeparator
 $miQuit     = New-Object System.Windows.Forms.ToolStripMenuItem 'Quit tray'
 
-[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miNormal,$miSep2,$miOpen,$miUninst,$miSep3,$miQuit))
+[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miNormal,$miSep2,$miRestart,$miSep3,$miOpen,$miUninst,$miSep4,$miQuit))
 $icon.ContextMenuStrip = $ctx
 
 function Invoke-Bat([string]$arg) {
     Start-Process -FilePath $BatPath -ArgumentList $arg -Verb RunAs -ErrorAction SilentlyContinue | Out-Null
+}
+
+function Confirm-Reboot([string]$label) {
+    [System.Windows.Forms.MessageBox]::Show(
+        "$label`n`nWindows will reboot in ~10 seconds. Save your work first.`nProceed?",
+        'Faraday Mode - Restart', 'YesNo', 'Warning') -eq 'Yes'
 }
 
 $miSafe.Add_Click(  { Invoke-Bat 'safe'   })
@@ -63,6 +78,10 @@ $miUninst.Add_Click({
     if ($ans -eq 'Yes') { Invoke-Bat 'uninstall'; Start-Sleep -Seconds 2; $script:Quit = $true }
 })
 $miQuit.Add_Click({ $script:Quit = $true })
+
+$miWinSafeMin.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode (Minimal).')              { Invoke-Bat 'winsafe-min'   } })
+$miWinSafeNet.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode with Networking.')        { Invoke-Bat 'winsafe-net'   } })
+$miWinSafeClr.Add_Click({ if (Confirm-Reboot 'Clear Safe Boot flag and reboot normally into Windows.') { Invoke-Bat 'winsafe-clear' } })
 
 # Left-click toggles mode (matches WFC behaviour).
 $icon.Add_MouseClick({
