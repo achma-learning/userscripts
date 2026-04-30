@@ -1,7 +1,16 @@
 # Faraday Mode — Windows hardening with a tray-bar mode switcher
 
-A drop-in lockdown toggle for Windows 10/11, modeled after the WFC
-"High Filtering" UX:
+A drop-in lockdown toggle for Windows 10/11 with three named modes,
+modeled after WFC's filtering profiles:
+
+| Mode               | Internet | NICs / Radios | Hyper-V       | VBS / HVCI / Cred Guard | Telemetry / SSH |
+|--------------------|----------|---------------|---------------|-------------------------|-----------------|
+| **High Filtering** | blocked in *and* out (loopback only) | all disabled | hypervisor + all VMs **off** | **off** (per request) | off |
+| **High Light**     | inbound blocked, outbound on | unchanged | VM-management & vSwitches off, hypervisor **on** | **on** (forced)         | off |
+| **Normal**         | Windows defaults | unchanged | unchanged     | unchanged               | unchanged       |
+
+(Old "Safe Mode" name is still accepted as a synonym for *High Filtering*.)
+
 
 - One scheduled task re-applies **Safe Mode** at every boot (runs as
   `SYSTEM`, no UAC prompt).
@@ -24,6 +33,30 @@ so **Normal Mode** restores the machine bit-for-bit.
 | `uninstall.ps1`   | Unregisters tasks, kills tray, reverts to normal.              |
 | `tray.ps1`        | Tray-bar shield + mode-switcher menu.                          |
 
+## Password gate
+
+On first install you set a password (PBKDF2-SHA256, 200k iterations,
+16-byte random salt). The hash lives at
+`%ProgramData%\FaradayMode\auth.dat` with an ACL stripped down to
+`SYSTEM` + `Administrators` only — a non-admin remote shell cannot
+read it.
+
+Every interactive subcommand that *changes* state requires the
+password: `safe`, `normal`, `toggle`, `uninstall`,
+`winsafe-{min,net,clear}`, `setpw`. Read-only `status` and the
+SYSTEM-context `boot` task are exempt — `boot` only ever applies safe,
+never unlocks, so it cannot be abused to disable the cage.
+
+Change it any time from the tray (*Change password…*) or with
+`FaradayMode.bat setpw`. Forgetting the password is recoverable:
+boot into Windows Safe Mode, log in as a local admin, and delete
+`%ProgramData%\FaradayMode\auth.dat`.
+
+> The password is a soft lock: it stops casual remote toggles via SSH,
+> RDP, or PsExec, but a determined attacker who already has admin rights
+> on the box could bypass the .bat by running the underlying commands
+> directly. It is one layer in defense-in-depth, not a silver bullet.
+
 ## Install / uninstall
 
 Double-click `FaradayMode.bat` — it self-elevates (one UAC prompt) and
@@ -40,9 +73,10 @@ in the tray menu.
 
 | Action                    | Effect                                                   |
 |---------------------------|----------------------------------------------------------|
-| Left-click shield         | Toggle Safe ↔ Normal (UAC).                              |
-| Right-click → Safe        | Force Safe Mode.                                         |
-| Right-click → Normal      | Force Normal Mode.                                       |
+| Left-click shield         | Cycle Normal → High Light → High Filtering → Normal.     |
+| Right-click → High Filtering | Full Faraday cage (block in/out, NICs/radios off, hypervisor off). |
+| Right-click → High Light  | Hardened mode: keeps internet + Defender + VBS/HVCI on, kills Hyper-V VMs / SSH / telemetry. |
+| Right-click → Normal      | Restore everything.                                      |
 | Right-click → Restart Windows → Safe Mode (Minimal)            | `bcdedit /set safeboot minimal` + reboot in 10 s. |
 | Right-click → Restart Windows → Safe Mode with Networking      | `bcdedit /set safeboot network` + reboot in 10 s. |
 | Right-click → Restart Windows → Reboot normally (clear)        | `bcdedit /deletevalue safeboot` + reboot in 10 s. |
@@ -50,7 +84,75 @@ in the tray menu.
 | Right-click → Uninstall   | Confirms, then full uninstall + revert.                  |
 | Right-click → Quit tray   | Closes the tray (autostart tasks remain).                |
 
-## What "Safe Mode" actually does
+## What "High Light" mode does
+
+A middle-ground profile for daily use: keeps the system *safer* than
+Windows defaults without breaking everyday work.
+
+- **Firewall** — default `block-in / allow-out` plus the always-on
+  `Faraday-DenyTCP-*` / `Faraday-DenyUDP-*` rules for the high-risk
+  inbound ports. Existing user allow rules untouched, so apps still
+  reach the internet.
+- **Services off** — RDP / WinRM / Remote Registry, Spooler, WebClient,
+  DiagTrack & friends, all Hyper-V VM-management & integration
+  services, `sshd` + `ssh-agent`, plus the long telemetry list.
+- **Services left on (security-essential)** — `WinDefend`, `MpsSvc`
+  (Windows Firewall), `BFE`, `Dnscache`, `EventLog`, `WlanSvc`,
+  `IKEEXT` (so VPN still works), `RpcSs`, `DcomLaunch`, `Schedule`.
+- **Hypervisor + VBS / HVCI / Credential Guard FORCED ON.** Even if
+  they were off in your previous Windows config, High Light enables
+  them because they protect the kernel.
+- **Hyper-V vSwitch host adapters disabled** — kills WSL2 / Docker /
+  external VM networking but leaves your physical NICs alone.
+- **NTLM / AutoRun / Telemetry policy / LLMNR / mDNS** — same registry
+  hardening as High Filtering.
+- **DNS / hosts / NICs / radios** — *not* touched. Internet works
+  normally.
+
+## Anti-kernel-attack hardening (applied in High Filtering, subset in High Light)
+
+Compensates for VBS / HVCI / Credential Guard being off in High
+Filtering by closing the same attack classes at user-mode and
+kernel-blocklist level. Run `FaradayMode.bat audit` (or *Security
+audit…* in the tray) to see the live status.
+
+| Tweak | Stops | Mode |
+|---|---|---|
+| `VulnerableDriverBlocklistEnable = 1` (Microsoft Vulnerable Driver Blocklist) | BYOVD kernel exploits (Lazarus, Scattered Spider, BlackByte, etc.) | HF + HL |
+| `RunAsPPL = 2` + `RunAsPPLBoot = 2` (LSA Protection) | Mimikatz / LSASS credential dumps | HF + HL |
+| Defender ASR rules (14 of them: block LSASS access, vulnerable signed drivers, Office macro escalation, JS/VBS download exec, persistence-via-WMI, untrusted USB, etc.) | User-mode → kernel privilege escalation | HF + HL |
+| `Disable-WindowsOptionalFeature MicrosoftWindows-PowerShellV2` + `WSH Enabled = 0` | PowerShell-v2 downgrade, `.vbs`/`.js` malware | HF only |
+| `Set-ProcessMitigation -System -Enable DEP,SEHOP,ForceRelocateImages,RandomizeMemoryAllocations,BottomUp,HighEntropy` | Userland exploit primitives (ROP/JOP, heap spray, ASLR bypass) | HF only |
+| `EnableScriptBlockLogging = 1`, `EnableModuleLogging = 1`, `EnableTranscripting = 1` | Lateral movement via PowerShell goes to Event Log | HF + HL |
+| `Set-MpPreference -EnableControlledFolderAccess Enabled` | Ransomware encryption of Documents/Pictures/Desktop | HF + HL |
+| `DenyDeviceClasses = 1` + `DeviceInstallDisabled = 1` + `AllowDmaUnderLock = 0` | Rogue USB / DMA attacks while machine is locked | HF only |
+| Audit-only: `Confirm-SecureBootUEFI`, `Get-BitLockerVolume`, `Get-Tpm` | Bootkits, cold-boot disk read | report-only |
+
+**Caveats / what these can break:**
+
+- **VDB** can refuse to load very old game anti-cheat or third-party
+  signed-but-vulnerable drivers. If a specific app stops working,
+  check Windows Event Log → Microsoft-Windows-CodeIntegrity.
+- **`RunAsPPL = 2`** blocks unsigned LSA security plugins. If your AV
+  has an LSA plugin (rare on consumer AVs), it may need to be re-signed
+  or excluded.
+- **ASR rules** can false-positive on dev tools (`mshta.exe`, custom
+  Python launchers, MSBuild). Switch to `AuditMode` first if you need
+  to investigate: `Set-MpPreference -AttackSurfaceReductionRules_Actions AuditMode`.
+- **`USB-install blocked`** prevents *new* USB devices from
+  installing drivers. Existing/known devices keep working.
+- **PowerShell v2 disabled** breaks the rare app still pinned to v2.
+- **System-wide `ForceRelocateImages`** breaks unsigned legacy
+  binaries that lack `/DYNAMICBASE`.
+
+Reverts on Normal Mode: USB/DMA policies, PowerShell v2, WSH, and
+process mitigations come back to Windows defaults. The pure-win
+items (VDB, RunAsPPL, ASR, ScriptBlock logging, Controlled Folder
+Access) are **kept on** even in Normal Mode — they're defense in
+depth that doesn't break normal usage. Uncomment the marked lines in
+`:DISABLE` if you want them off too.
+
+## What "High Filtering" mode does
 
 ### Firewall — real block-all (this is the fix vs. v1)
 
@@ -115,17 +217,40 @@ the firewall so no electrons leave the machine in the first place:
   in the services backup and come back to their original start mode on
   Normal Mode.
 
-### Hyper-V — VM management plane stopped, vSwitches torn down
+### Hyper-V — full kill (hypervisor + VBS + Credential Guard)
 
-VBS / HVCI / Credential Guard are deliberately **kept on** — those use
-the hypervisor to *protect* the OS. What gets stopped:
+> Trade-off: turning off VBS / HVCI / Credential Guard *weakens*
+> protection against kernel-level malware while Safe Mode is active —
+> those features use the hypervisor to *protect* the OS. They are
+> turned off here per explicit user request and are restored on Normal
+> Mode.
 
-- Host-side VM management: `vmms`, `vmcompute`, `HvHost`.
+- Host-side VM management: `vmms`, `vmcompute`, `HvHost`, `nvspwmi`.
 - Integration services: `vmickvpexchange`, `vmicguestinterface`,
   `vmicshutdown`, `vmicheartbeat`, `vmicrdv`, `vmictimesync`, `vmicvss`.
-- All `vEthernet*` host adapters (the host-side endpoints of any
-  external Hyper-V vSwitch) are disabled — kills WSL2 / Docker-Desktop
-  / external VM networking while Safe Mode is on.
+- All `vEthernet*` host adapters disabled (kills WSL2 / Docker /
+  external VM networking).
+- **Hypervisor itself off** at next boot:
+  `bcdedit /set {current} hypervisorlaunchtype off`.
+- VBS / HVCI / Credential Guard registry off:
+  - `EnableVirtualizationBasedSecurity = 0`
+  - `Scenarios\HypervisorEnforcedCodeIntegrity\Enabled = 0`
+  - `Lsa\LsaCfgFlags = 0`
+
+### Inbound shell daemons + unnecessary background services
+
+- **`sshd` and `ssh-agent`** are stopped and disabled — direct answer
+  to "no SSH that controls my machine".
+- A long list of telemetry / non-essential services is also stopped:
+  `BITS`, `DoSvc`, `MapsBroker`, `WerSvc`, `DPS`, `WdiServiceHost`,
+  `WdiSystemHost`, `PcaSvc`, `DsmSvc`, `DsSvc`, `lfsvc` (geolocation),
+  `PimIndexMaintenanceSvc`, `UnistoreSvc`, `UserDataSvc`, `CDPSvc`
+  (cross-device sync), `OneSyncSvc`, `WMPNetworkSvc`, `icssvc`
+  (mobile hotspot), `TapiSrv`, `AppVClient`, `PhoneSvc`,
+  `XblAuthManager`, `XblGameSave`, `XboxGipSvc`, `XboxNetApiSvc`,
+  `wisvc`, `RetailDemo`, `InstallService`, `ShellHWDetection`.
+- All start types are recorded in `services.txt` and restored exactly
+  on Normal Mode.
 
 ### VPN — torn down, IPsec keying disabled, tunnel drivers blocked
 

@@ -25,7 +25,12 @@ if (Test-Path -LiteralPath $pidFile) {
 $stateFile = Join-Path $env:ProgramData 'FaradayMode\state.flag'
 
 function Get-Mode {
-    if (Test-Path -LiteralPath $stateFile) { 'safe' } else { 'normal' }
+    if (-not (Test-Path -LiteralPath $stateFile)) { return 'normal' }
+    $c = (Get-Content -LiteralPath $stateFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($null -eq $c) { return 'normal' }
+    $c = $c.Trim().ToLower()
+    if ($c -eq 'safe' -or $c -eq 'lite') { return $c }
+    return 'safe'  # legacy state files
 }
 
 # ---- Tray icon -------------------------------------------------------
@@ -38,8 +43,9 @@ $ctx        = New-Object System.Windows.Forms.ContextMenuStrip
 $miStatus   = New-Object System.Windows.Forms.ToolStripMenuItem 'Faraday Mode'
 $miStatus.Enabled = $false
 $miSep1     = New-Object System.Windows.Forms.ToolStripSeparator
-$miSafe     = New-Object System.Windows.Forms.ToolStripMenuItem 'Safe Mode (locked down)'
-$miNormal   = New-Object System.Windows.Forms.ToolStripMenuItem 'Normal Mode (open)'
+$miSafe     = New-Object System.Windows.Forms.ToolStripMenuItem 'High Filtering  (Faraday cage - block all)'
+$miLite     = New-Object System.Windows.Forms.ToolStripMenuItem 'High Light  (hardened, internet on)'
+$miNormal   = New-Object System.Windows.Forms.ToolStripMenuItem 'Normal  (Windows defaults)'
 $miSep2     = New-Object System.Windows.Forms.ToolStripSeparator
 
 # Restart submenu (Windows OS-level Safe Boot via bcdedit).
@@ -50,12 +56,14 @@ $miWinSafeClr = New-Object System.Windows.Forms.ToolStripMenuItem 'Reboot normal
 [void]$miRestart.DropDownItems.AddRange(@($miWinSafeMin,$miWinSafeNet,$miWinSafeClr))
 
 $miSep3     = New-Object System.Windows.Forms.ToolStripSeparator
+$miAudit    = New-Object System.Windows.Forms.ToolStripMenuItem 'Security audit...'
+$miSetPw    = New-Object System.Windows.Forms.ToolStripMenuItem 'Change password...'
 $miOpen     = New-Object System.Windows.Forms.ToolStripMenuItem 'Open backup folder'
 $miUninst   = New-Object System.Windows.Forms.ToolStripMenuItem 'Uninstall (revert + remove autostart)'
 $miSep4     = New-Object System.Windows.Forms.ToolStripSeparator
 $miQuit     = New-Object System.Windows.Forms.ToolStripMenuItem 'Quit tray'
 
-[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miNormal,$miSep2,$miRestart,$miSep3,$miOpen,$miUninst,$miSep4,$miQuit))
+[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miLite,$miNormal,$miSep2,$miRestart,$miSep3,$miAudit,$miSetPw,$miOpen,$miUninst,$miSep4,$miQuit))
 $icon.ContextMenuStrip = $ctx
 
 function Invoke-Bat([string]$arg) {
@@ -69,6 +77,7 @@ function Confirm-Reboot([string]$label) {
 }
 
 $miSafe.Add_Click(  { Invoke-Bat 'safe'   })
+$miLite.Add_Click(  { Invoke-Bat 'lite'   })
 $miNormal.Add_Click({ Invoke-Bat 'normal' })
 $miOpen.Add_Click(  { Start-Process -FilePath 'explorer.exe' -ArgumentList (Join-Path $env:ProgramData 'FaradayMode\backup') })
 $miUninst.Add_Click({
@@ -82,30 +91,49 @@ $miQuit.Add_Click({ $script:Quit = $true })
 $miWinSafeMin.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode (Minimal).')              { Invoke-Bat 'winsafe-min'   } })
 $miWinSafeNet.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode with Networking.')        { Invoke-Bat 'winsafe-net'   } })
 $miWinSafeClr.Add_Click({ if (Confirm-Reboot 'Clear Safe Boot flag and reboot normally into Windows.') { Invoke-Bat 'winsafe-clear' } })
+$miSetPw.Add_Click(     { Invoke-Bat 'setpw' })
+$miAudit.Add_Click(     { Invoke-Bat 'audit' })
 
-# Left-click toggles mode (matches WFC behaviour).
+# Left-click cycles: Normal -> High Light -> High Filtering -> Normal ...
 $icon.Add_MouseClick({
     param($s,$e)
     if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
-        if ((Get-Mode) -eq 'safe') { Invoke-Bat 'normal' } else { Invoke-Bat 'safe' }
+        switch (Get-Mode) {
+            'normal' { Invoke-Bat 'lite' }
+            'lite'   { Invoke-Bat 'safe' }
+            'safe'   { Invoke-Bat 'normal' }
+        }
     }
 })
 
 # ---- Render current state -------------------------------------------
 function Refresh-Ui {
     $mode = Get-Mode
-    if ($mode -eq 'safe') {
-        $icon.Icon = [System.Drawing.SystemIcons]::Shield
-        $icon.Text = 'Faraday Mode: SAFE (locked down)'
-        $miStatus.Text   = 'Mode: SAFE  (locked down)'
-        $miSafe.Checked  = $true
-        $miNormal.Checked = $false
-    } else {
-        $icon.Icon = [System.Drawing.SystemIcons]::Information
-        $icon.Text = 'Faraday Mode: NORMAL'
-        $miStatus.Text   = 'Mode: NORMAL'
-        $miSafe.Checked  = $false
-        $miNormal.Checked = $true
+    switch ($mode) {
+        'safe' {
+            $icon.Icon = [System.Drawing.SystemIcons]::Shield
+            $icon.Text = 'Faraday: HIGH FILTERING (block all)'
+            $miStatus.Text    = 'Mode: HIGH FILTERING  (Faraday cage)'
+            $miSafe.Checked   = $true
+            $miLite.Checked   = $false
+            $miNormal.Checked = $false
+        }
+        'lite' {
+            $icon.Icon = [System.Drawing.SystemIcons]::Warning
+            $icon.Text = 'Faraday: HIGH LIGHT (hardened, internet on)'
+            $miStatus.Text    = 'Mode: HIGH LIGHT  (hardened)'
+            $miSafe.Checked   = $false
+            $miLite.Checked   = $true
+            $miNormal.Checked = $false
+        }
+        default {
+            $icon.Icon = [System.Drawing.SystemIcons]::Information
+            $icon.Text = 'Faraday: NORMAL'
+            $miStatus.Text    = 'Mode: NORMAL'
+            $miSafe.Checked   = $false
+            $miLite.Checked   = $false
+            $miNormal.Checked = $true
+        }
     }
 }
 Refresh-Ui

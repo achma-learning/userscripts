@@ -47,6 +47,18 @@ $traySettings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStop
 Register-ScheduledTask -TaskName 'FaradayMode\Tray' `
     -Action $trayAction -Trigger $trayTrigger -Principal $trayPrincipal -Settings $traySettings -Force | Out-Null
 
+$authPs1  = Join-Path (Split-Path -Parent $BatPath) 'auth.ps1'
+$authFile = Join-Path $env:ProgramData 'FaradayMode\auth.dat'
+if ((Test-Path -LiteralPath $authPs1) -and (-not (Test-Path -LiteralPath $authFile))) {
+    Write-Host ""
+    Write-Host "[*] Set a password to gate Safe/Normal toggles."
+    Write-Host "    The boot scheduled task bypasses this prompt (it only ever applies safe)."
+    & $authPs1 -Set -AuthFile $authFile
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Password not set - Faraday will run unauthenticated until you run 'FaradayMode.bat setpw'."
+    }
+}
+
 Write-Host "[*] Applying safe mode now ..."
 & $BatPath 'safe' | Out-Null
 
