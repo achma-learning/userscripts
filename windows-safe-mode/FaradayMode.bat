@@ -81,7 +81,8 @@ if errorlevel 1 (
     echo.
     echo  [!] Authentication failed. Aborting.
     echo.
-    timeout /t 3 >nul
+    echo     Press any key to close this window...
+    pause >nul
     exit /b 1
 )
 :SKIP_AUTH
@@ -507,10 +508,17 @@ echo [*] Re-enabling radios (Bluetooth / Wi-Fi / NFC / cellular)...
 powershell -NoProfile -Command "if (Test-Path '%BACKUP%\radios.txt') { Get-Content -LiteralPath '%BACKUP%\radios.txt' | ForEach-Object { Enable-PnpDevice -InstanceId $_ -Confirm:$false -ErrorAction SilentlyContinue } }" 2>nul
 powershell -NoProfile -Command "try { [Windows.Devices.Radios.Radio,Windows.System.Devices,ContentType=WindowsRuntime] | Out-Null; $op = [Windows.Devices.Radios.Radio]::RequestAccessAsync(); while ($op.Status -eq 0) { Start-Sleep -Milliseconds 50 }; $get = [Windows.Devices.Radios.Radio]::GetRadiosAsync(); while ($get.Status -eq 0) { Start-Sleep -Milliseconds 50 }; foreach ($r in $get.GetResults()) { $set = $r.SetStateAsync('On'); while ($set.Status -eq 0) { Start-Sleep -Milliseconds 50 } } } catch {}" 2>nul
 
-echo [*] Re-enabling network adapters that were UP before Safe Mode...
-if exist "%BACKUP%\adapters.txt" (
-    powershell -NoProfile -Command "Get-Content -LiteralPath '%BACKUP%\adapters.txt' | Where-Object { $_ -ne '' } | ForEach-Object { Enable-NetAdapter -Name $_ -Confirm:$false -ErrorAction SilentlyContinue }" 2>nul
-)
+echo [*] Re-enabling ALL physical network adapters (Ethernet, Wi-Fi, cellular)...
+REM   We deliberately re-enable EVERY physical NIC, not only those that
+REM   were UP at safe-mode time. Otherwise a Wi-Fi adapter that was
+REM   disconnected when you entered Safe Mode would stay administratively
+REM   disabled forever (Disable-NetAdapter is sticky and Enable-PnpDevice
+REM   does not always reverse it).
+powershell -NoProfile -Command "Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Enable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" 2>nul
+
+echo [*] Restarting WLAN AutoConfig (WlanSvc) so Wi-Fi auto-reconnects...
+sc config WlanSvc start= auto >nul 2>&1
+sc start  WlanSvc             >nul 2>&1
 
 REM ---- Re-enable Hyper-V vSwitch host adapters -----------------------
 echo [*] Re-enabling Hyper-V vSwitch host adapters...

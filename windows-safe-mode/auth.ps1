@@ -18,6 +18,9 @@
 #   read it. PBKDF2 also makes any exfiltrated hash slow to crack.
 # - SYSTEM is allowed to read it so the boot scheduled task can verify
 #   if you ever decide to gate `boot` too (currently it bypasses).
+# - All user-facing messages use Write-Host (stdout) - never Write-Error
+#   - so the password prompt is never polluted by red error-stream text
+#   that the user might mistake for "the script crashed".
 
 param(
     [Parameter(ParameterSetName = 'Set',    Mandatory = $true)] [switch]$Set,
@@ -25,7 +28,13 @@ param(
     [Parameter(Mandatory = $true)] [string]$AuthFile
 )
 
-$ErrorActionPreference = 'Stop'
+# Continue (not Stop) so a stray non-terminating error does not paint a
+# red traceback over the password prompt and exit before the user can
+# read it. We handle every fallible call with try/catch explicitly.
+$ErrorActionPreference = 'Continue'
+# Suppress the red error stream entirely - any unexpected error gets
+# converted to a friendly Write-Host message inside our try/catch.
+$ErrorView = 'NormalView'
 
 function Get-Plain([System.Security.SecureString]$ss) {
     if (-not $ss) { return '' }
@@ -51,52 +60,69 @@ function Lock-Acl([string]$path) {
     cmd /c icacls "$path" /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" 2>$null | Out-Null
 }
 
+function Say-Warn([string]$msg) {
+    Write-Host "[!] $msg" -ForegroundColor Yellow
+}
+
 if ($Set) {
-    $pw1 = Read-Host -Prompt 'Set new Faraday password' -AsSecureString
-    $pw2 = Read-Host -Prompt 'Confirm new Faraday password' -AsSecureString
-    $p1 = Get-Plain $pw1
-    $p2 = Get-Plain $pw2
-    if ($p1 -ne $p2)        { Write-Error 'Passwords do not match.' ; exit 2 }
-    if ($p1.Length -lt 6)   { Write-Error 'Password too short (minimum 6 characters).' ; exit 2 }
+    try {
+        $pw1 = Read-Host -Prompt 'Set new Faraday password' -AsSecureString
+        $pw2 = Read-Host -Prompt 'Confirm new Faraday password' -AsSecureString
+        $p1 = Get-Plain $pw1
+        $p2 = Get-Plain $pw2
+        if ($p1 -ne $p2)      { Say-Warn 'Passwords do not match.'                ; exit 2 }
+        if ($p1.Length -lt 6) { Say-Warn 'Password too short (minimum 6 chars).'  ; exit 2 }
 
-    $salt = New-Object byte[] 16
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
-    $iter = 200000
-    $hash = Compute-Hash $p1 $salt $iter
+        $salt = New-Object byte[] 16
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+        $iter = 200000
+        $hash = Compute-Hash $p1 $salt $iter
 
-    $blob = '{0}:{1}:{2}' -f ([Convert]::ToBase64String($salt)), $iter, ([Convert]::ToBase64String($hash))
-    $dir  = Split-Path -Parent $AuthFile
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    Set-Content -LiteralPath $AuthFile -Value $blob -Encoding ASCII -Force
-    Lock-Acl $AuthFile
+        $blob = '{0}:{1}:{2}' -f ([Convert]::ToBase64String($salt)), $iter, ([Convert]::ToBase64String($hash))
+        $dir  = Split-Path -Parent $AuthFile
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        Set-Content -LiteralPath $AuthFile -Value $blob -Encoding ASCII -Force
+        Lock-Acl $AuthFile
 
-    Write-Host '[+] Faraday password set.'
-    exit 0
+        Write-Host '[+] Faraday password set.' -ForegroundColor Green
+        exit 0
+    } catch {
+        Say-Warn ("Could not set password: " + $_.Exception.Message)
+        exit 2
+    }
 }
 
 if ($Verify) {
-    if (-not (Test-Path -LiteralPath $AuthFile)) {
-        # No password configured yet - allow.
-        exit 0
-    }
-    $blob = (Get-Content -LiteralPath $AuthFile -ErrorAction Stop | Select-Object -First 1).Trim()
-    $parts = $blob -split ':'
-    if ($parts.Length -ne 3) { Write-Error 'Auth file is corrupt.' ; exit 1 }
-
     try {
-        $salt     = [Convert]::FromBase64String($parts[0])
-        $iter     = [int]$parts[1]
-        $expected = [Convert]::FromBase64String($parts[2])
+        if (-not (Test-Path -LiteralPath $AuthFile)) {
+            # No password configured yet - allow.
+            exit 0
+        }
+        $raw = Get-Content -LiteralPath $AuthFile -ErrorAction SilentlyContinue
+        if (-not $raw) { Say-Warn 'Auth file is empty or unreadable.' ; exit 1 }
+        $blob  = ($raw | Select-Object -First 1).Trim()
+        $parts = $blob -split ':'
+        if ($parts.Length -ne 3) { Say-Warn 'Auth file is corrupt.' ; exit 1 }
+
+        try {
+            $salt     = [Convert]::FromBase64String($parts[0])
+            $iter     = [int]$parts[1]
+            $expected = [Convert]::FromBase64String($parts[2])
+        } catch {
+            Say-Warn 'Auth file is corrupt.'
+            exit 1
+        }
+
+        $pw = Read-Host -Prompt 'Faraday password' -AsSecureString
+        $p  = Get-Plain $pw
+        if ([string]::IsNullOrEmpty($p)) { Say-Warn 'No password entered.' ; exit 1 }
+
+        $actual = Compute-Hash $p $salt $iter
+        if (ConstantTime-Equal $actual $expected) { exit 0 }
+        Say-Warn 'Wrong password.'
+        exit 1
     } catch {
-        Write-Error 'Auth file is corrupt.' ; exit 1
+        Say-Warn ("Verification error: " + $_.Exception.Message)
+        exit 1
     }
-
-    $pw = Read-Host -Prompt 'Faraday password' -AsSecureString
-    $p  = Get-Plain $pw
-    if ([string]::IsNullOrEmpty($p)) { Write-Host '[!] No password entered.' ; exit 1 }
-
-    $actual = Compute-Hash $p $salt $iter
-    if (ConstantTime-Equal $actual $expected) { exit 0 }
-    Write-Host '[!] Wrong password.'
-    exit 1
 }
