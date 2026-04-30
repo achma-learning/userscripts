@@ -89,15 +89,16 @@ REM ---- dispatch -------------------------------------------------------
 if /i "%CMD%"=="status"        goto :STATUS
 if /i "%CMD%"=="install"       goto :INSTALL
 if /i "%CMD%"=="uninstall"     goto :UNINSTALL
-if /i "%CMD%"=="safe"          goto :ENABLE
-if /i "%CMD%"=="boot"          goto :ENABLE
-if /i "%CMD%"=="normal"        goto :DISABLE
+if /i "%CMD%"=="safe"          goto :SWITCH_SAFE
+if /i "%CMD%"=="boot"          goto :SWITCH_SAFE
+if /i "%CMD%"=="lite"          goto :SWITCH_LITE
+if /i "%CMD%"=="normal"        goto :SWITCH_NORMAL
 if /i "%CMD%"=="winsafe-min"   goto :WINSAFE_MIN
 if /i "%CMD%"=="winsafe-net"   goto :WINSAFE_NET
 if /i "%CMD%"=="winsafe-clear" goto :WINSAFE_CLEAR
 if /i "%CMD%"=="setpw"         goto :SETPW
 if /i "%CMD%"=="toggle" (
-    if exist "%STATE%" ( goto :DISABLE ) else ( goto :ENABLE )
+    if exist "%STATE%" ( goto :SWITCH_NORMAL ) else ( goto :SWITCH_SAFE )
 )
 
 echo Unknown command: %CMD%
@@ -105,7 +106,38 @@ exit /b 1
 
 REM =====================================================================
 :STATUS
-if exist "%STATE%" ( echo Faraday Mode: SAFE ) else ( echo Faraday Mode: NORMAL )
+call :READ_STATE
+echo Faraday Mode: %_CURMODE%
+exit /b 0
+
+REM ---- READ_STATE: set _CURMODE = SAFE / LITE / NORMAL ---------------
+:READ_STATE
+set "_CURMODE=NORMAL"
+if exist "%STATE%" (
+    set /p _CURRAW=<"%STATE%"
+    if /i "!_CURRAW!"=="safe" set "_CURMODE=SAFE"
+    if /i "!_CURRAW!"=="lite" set "_CURMODE=LITE"
+)
+exit /b 0
+
+REM =====================================================================
+:SWITCH_SAFE
+call :READ_STATE
+if /i "%_CURMODE%"=="SAFE" ( echo [=] Already in HIGH FILTERING. & exit /b 0 )
+if /i "%_CURMODE%"=="LITE" call :DISABLE_LITE
+goto :ENABLE
+
+:SWITCH_LITE
+call :READ_STATE
+if /i "%_CURMODE%"=="LITE" ( echo [=] Already in HIGH LIGHT. & exit /b 0 )
+if /i "%_CURMODE%"=="SAFE" call :DISABLE
+goto :ENABLE_LITE
+
+:SWITCH_NORMAL
+call :READ_STATE
+if /i "%_CURMODE%"=="NORMAL" ( echo [=] Already NORMAL. & exit /b 0 )
+if /i "%_CURMODE%"=="SAFE" goto :DISABLE
+if /i "%_CURMODE%"=="LITE" goto :DISABLE_LITE
 exit /b 0
 
 REM =====================================================================
@@ -156,13 +188,9 @@ exit /b %RC%
 
 REM =====================================================================
 :ENABLE
-if exist "%STATE%" (
-    echo [=] Faraday Mode is already SAFE.
-    exit /b 0
-)
 echo.
 echo  ==========================================
-echo   Engaging FARADAY MODE - hardening device
+echo   Engaging HIGH FILTERING - full Faraday cage
 echo  ==========================================
 echo.
 
@@ -389,13 +417,9 @@ exit /b 0
 
 REM =====================================================================
 :DISABLE
-if not exist "%STATE%" (
-    echo [=] Faraday Mode is already NORMAL.
-    exit /b 0
-)
 echo.
 echo  ==========================================
-echo   Disengaging FARADAY MODE - restoring
+echo   Disengaging HIGH FILTERING - restoring
 echo  ==========================================
 echo.
 
@@ -484,6 +508,153 @@ del /q "%STATE%" >nul 2>&1
 
 echo.
 echo  [+] FARADAY MODE is now NORMAL.  (Reboot recommended.)
+echo.
+exit /b 0
+
+REM =====================================================================
+:ENABLE_LITE
+echo.
+echo  ==========================================
+echo   Engaging HIGH LIGHT - hardened, internet on
+echo  ==========================================
+echo.
+
+REM ---- Backup --------------------------------------------------------
+echo [*] Backing up firewall + services...
+netsh advfirewall export "%FWBACKUP%" >nul
+
+> "%SVCBACKUP%" echo # FaradayMode service backup (lite)
+for %%S in (
+    TermService SessionEnv UmRdpService WinRM RemoteRegistry RemoteAccess
+    Spooler WebClient DiagTrack dmwappushservice TlntSvr SNMP Fax RasAuto
+    iphlpsvc WinHttpAutoProxySvc
+    vmms vmcompute HvHost vmickvpexchange vmicguestinterface vmicshutdown
+    vmicheartbeat vmicrdv vmictimesync vmicvss nvspwmi
+    sshd ssh-agent
+    BITS DoSvc MapsBroker WerSvc DPS WdiServiceHost WdiSystemHost
+    PcaSvc DsmSvc DsSvc lfsvc PimIndexMaintenanceSvc UnistoreSvc UserDataSvc
+    CDPSvc OneSyncSvc WMPNetworkSvc icssvc TapiSrv AppVClient PhoneSvc
+    XblAuthManager XblGameSave XboxGipSvc XboxNetApiSvc wisvc RetailDemo
+    InstallService ShellHWDetection
+) do (
+    for /f "tokens=2*" %%A in ('sc qc "%%S" 2^>nul ^| find "START_TYPE"') do (
+        >> "%SVCBACKUP%" echo %%S=%%B
+    )
+)
+
+REM ---- Firewall: keep canonical block-in / allow-out, plus deny rules
+echo [*] Firewall: block-in / allow-out + always-on inbound deny rules...
+netsh advfirewall set allprofiles state on                                 >nul
+netsh advfirewall set allprofiles firewallpolicy blockinbound,allowoutbound >nul
+netsh advfirewall set allprofiles settings inboundusernotification disable  >nul
+for %%P in (135 137 138 139 445 593 1433 1434 3389 5040 5353 5355 5985 5986) do (
+    netsh advfirewall firewall add rule name="Faraday-DenyTCP-%%P" dir=in action=block protocol=TCP localport=%%P >nul
+    netsh advfirewall firewall add rule name="Faraday-DenyUDP-%%P" dir=in action=block protocol=UDP localport=%%P >nul
+)
+
+REM ---- Services off (high-risk + telemetry + Hyper-V + sshd) ---------
+REM   Things we DO NOT touch in lite mode and which stay running:
+REM     WinDefend, MpsSvc, BFE, Dnscache, EventLog, RpcSs, DcomLaunch,
+REM     WlanSvc, IKEEXT (so VPN still works), Schedule, BITS-deps, etc.
+echo [*] Stopping remote-access / telemetry / Hyper-V / sshd...
+for %%S in (
+    TermService SessionEnv UmRdpService WinRM RemoteRegistry RemoteAccess
+    Spooler WebClient DiagTrack dmwappushservice TlntSvr SNMP Fax RasAuto
+    WinHttpAutoProxySvc
+    vmms vmcompute HvHost vmickvpexchange vmicguestinterface vmicshutdown
+    vmicheartbeat vmicrdv vmictimesync vmicvss nvspwmi
+    sshd ssh-agent
+    BITS DoSvc MapsBroker WerSvc DPS WdiServiceHost WdiSystemHost
+    PcaSvc DsmSvc DsSvc lfsvc PimIndexMaintenanceSvc UnistoreSvc UserDataSvc
+    CDPSvc OneSyncSvc WMPNetworkSvc icssvc TapiSrv AppVClient PhoneSvc
+    XblAuthManager XblGameSave XboxGipSvc XboxNetApiSvc wisvc RetailDemo
+    InstallService ShellHWDetection
+) do (
+    sc stop   "%%S" >nul 2>&1
+    sc config "%%S" start= disabled >nul 2>&1
+)
+
+REM ---- Disable Hyper-V vSwitch host adapters (kills WSL2/Docker net)
+powershell -NoProfile -Command "Get-NetAdapter -Name 'vEthernet*' -ErrorAction SilentlyContinue | Disable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" 2>nul
+
+REM ---- Remote-login surfaces -----------------------------------------
+echo [*] Disabling RDP / Remote Assistance / PSRemoting...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server"   /v fDenyTSConnections /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Remote Assistance" /v fAllowToGetHelp    /t REG_DWORD /d 0 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Remote Assistance" /v fAllowFullControl  /t REG_DWORD /d 0 /f >nul
+powershell -NoProfile -Command "Disable-PSRemoting -Force -WarningAction SilentlyContinue" >nul 2>&1
+
+REM ---- ENSURE VBS / HVCI / Credential Guard ENABLED (security on) ----
+echo [*] Ensuring VBS / HVCI / Credential Guard are ENABLED...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v EnableVirtualizationBasedSecurity /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v Enabled /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LsaCfgFlags /t REG_DWORD /d 1 /f >nul
+REM Hypervisor itself: leave at auto - the security stack needs it.
+bcdedit /set "{current}" hypervisorlaunchtype auto >nul 2>&1
+
+REM ---- Misc reg hardening (NTLM, autorun, telemetry policy) ----------
+echo [*] Reg hardening: NTLM, AutoRun, telemetry...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa"        /v NoLMHash                       /t REG_DWORD /d 1 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" /v RestrictSendingNTLMTraffic     /t REG_DWORD /d 2 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" /v RestrictReceivingNTLMTraffic   /t REG_DWORD /d 2 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa"        /v LmCompatibilityLevel           /t REG_DWORD /d 5 /f >nul
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoDriveTypeAutoRun /t REG_DWORD /d 255 /f >nul
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoAutorun         /t REG_DWORD /d 1   /f >nul
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection"          /v AllowTelemetry    /t REG_DWORD /d 0   /f >nul
+reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting"          /v Disabled          /t REG_DWORD /d 1   /f >nul
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient"            /v EnableMulticast   /t REG_DWORD /d 0 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters"       /v EnableMDNS        /t REG_DWORD /d 0 /f >nul
+
+ipconfig /flushdns >nul
+
+> "%STATE%" echo lite
+echo.
+echo  [+] HIGH LIGHT engaged. Internet is on, VBS/HVCI kept on.
+echo.
+exit /b 0
+
+REM =====================================================================
+:DISABLE_LITE
+echo.
+echo  ==========================================
+echo   Disengaging HIGH LIGHT - restoring
+echo  ==========================================
+echo.
+
+REM Restore service start types from services.txt.
+echo [*] Restoring services...
+if exist "%SVCBACKUP%" (
+    for /f "usebackq tokens=1,2 delims==" %%A in (`findstr /v /b "#" "%SVCBACKUP%"`) do (
+        if not "%%A"=="" call :RESTORE_SVC "%%A" "%%B"
+    )
+)
+
+REM Re-enable Hyper-V vSwitch host adapters.
+powershell -NoProfile -Command "Get-NetAdapter -Name 'vEthernet*' -ErrorAction SilentlyContinue | Enable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" 2>nul
+
+REM Revert reg hardening keys.
+echo [*] Reverting registry hardening...
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server"   /v fDenyTSConnections /f >nul 2>&1
+reg add    "HKLM\SYSTEM\CurrentControlSet\Control\Remote Assistance" /v fAllowToGetHelp    /t REG_DWORD /d 1 /f >nul
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" /v RestrictSendingNTLMTraffic   /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" /v RestrictReceivingNTLMTraffic /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Lsa"        /v LmCompatibilityLevel        /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoDriveTypeAutoRun /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" /v NoAutorun         /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\DataCollection"          /v AllowTelemetry    /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting"          /v Disabled          /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient"            /v EnableMulticast   /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters"       /v EnableMDNS        /f >nul 2>&1
+
+REM VBS/HVCI keys: leave them at 1 (security ON is the safe default for
+REM Normal mode too). User can toggle off via Windows Security if they
+REM need to.
+
+ipconfig /flushdns >nul
+del /q "%STATE%" >nul 2>&1
+
+echo.
+echo  [+] HIGH LIGHT disabled. Mode: NORMAL.
 echo.
 exit /b 0
 

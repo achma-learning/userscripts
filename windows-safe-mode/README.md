@@ -1,7 +1,16 @@
 # Faraday Mode — Windows hardening with a tray-bar mode switcher
 
-A drop-in lockdown toggle for Windows 10/11, modeled after the WFC
-"High Filtering" UX:
+A drop-in lockdown toggle for Windows 10/11 with three named modes,
+modeled after WFC's filtering profiles:
+
+| Mode               | Internet | NICs / Radios | Hyper-V       | VBS / HVCI / Cred Guard | Telemetry / SSH |
+|--------------------|----------|---------------|---------------|-------------------------|-----------------|
+| **High Filtering** | blocked in *and* out (loopback only) | all disabled | hypervisor + all VMs **off** | **off** (per request) | off |
+| **High Light**     | inbound blocked, outbound on | unchanged | VM-management & vSwitches off, hypervisor **on** | **on** (forced)         | off |
+| **Normal**         | Windows defaults | unchanged | unchanged     | unchanged               | unchanged       |
+
+(Old "Safe Mode" name is still accepted as a synonym for *High Filtering*.)
+
 
 - One scheduled task re-applies **Safe Mode** at every boot (runs as
   `SYSTEM`, no UAC prompt).
@@ -64,9 +73,10 @@ in the tray menu.
 
 | Action                    | Effect                                                   |
 |---------------------------|----------------------------------------------------------|
-| Left-click shield         | Toggle Safe ↔ Normal (UAC).                              |
-| Right-click → Safe        | Force Safe Mode.                                         |
-| Right-click → Normal      | Force Normal Mode.                                       |
+| Left-click shield         | Cycle Normal → High Light → High Filtering → Normal.     |
+| Right-click → High Filtering | Full Faraday cage (block in/out, NICs/radios off, hypervisor off). |
+| Right-click → High Light  | Hardened mode: keeps internet + Defender + VBS/HVCI on, kills Hyper-V VMs / SSH / telemetry. |
+| Right-click → Normal      | Restore everything.                                      |
 | Right-click → Restart Windows → Safe Mode (Minimal)            | `bcdedit /set safeboot minimal` + reboot in 10 s. |
 | Right-click → Restart Windows → Safe Mode with Networking      | `bcdedit /set safeboot network` + reboot in 10 s. |
 | Right-click → Restart Windows → Reboot normally (clear)        | `bcdedit /deletevalue safeboot` + reboot in 10 s. |
@@ -74,7 +84,32 @@ in the tray menu.
 | Right-click → Uninstall   | Confirms, then full uninstall + revert.                  |
 | Right-click → Quit tray   | Closes the tray (autostart tasks remain).                |
 
-## What "Safe Mode" actually does
+## What "High Light" mode does
+
+A middle-ground profile for daily use: keeps the system *safer* than
+Windows defaults without breaking everyday work.
+
+- **Firewall** — default `block-in / allow-out` plus the always-on
+  `Faraday-DenyTCP-*` / `Faraday-DenyUDP-*` rules for the high-risk
+  inbound ports. Existing user allow rules untouched, so apps still
+  reach the internet.
+- **Services off** — RDP / WinRM / Remote Registry, Spooler, WebClient,
+  DiagTrack & friends, all Hyper-V VM-management & integration
+  services, `sshd` + `ssh-agent`, plus the long telemetry list.
+- **Services left on (security-essential)** — `WinDefend`, `MpsSvc`
+  (Windows Firewall), `BFE`, `Dnscache`, `EventLog`, `WlanSvc`,
+  `IKEEXT` (so VPN still works), `RpcSs`, `DcomLaunch`, `Schedule`.
+- **Hypervisor + VBS / HVCI / Credential Guard FORCED ON.** Even if
+  they were off in your previous Windows config, High Light enables
+  them because they protect the kernel.
+- **Hyper-V vSwitch host adapters disabled** — kills WSL2 / Docker /
+  external VM networking but leaves your physical NICs alone.
+- **NTLM / AutoRun / Telemetry policy / LLMNR / mDNS** — same registry
+  hardening as High Filtering.
+- **DNS / hosts / NICs / radios** — *not* touched. Internet works
+  normally.
+
+## What "High Filtering" mode does
 
 ### Firewall — real block-all (this is the fix vs. v1)
 
