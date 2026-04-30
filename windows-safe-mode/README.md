@@ -24,6 +24,30 @@ so **Normal Mode** restores the machine bit-for-bit.
 | `uninstall.ps1`   | Unregisters tasks, kills tray, reverts to normal.              |
 | `tray.ps1`        | Tray-bar shield + mode-switcher menu.                          |
 
+## Password gate
+
+On first install you set a password (PBKDF2-SHA256, 200k iterations,
+16-byte random salt). The hash lives at
+`%ProgramData%\FaradayMode\auth.dat` with an ACL stripped down to
+`SYSTEM` + `Administrators` only — a non-admin remote shell cannot
+read it.
+
+Every interactive subcommand that *changes* state requires the
+password: `safe`, `normal`, `toggle`, `uninstall`,
+`winsafe-{min,net,clear}`, `setpw`. Read-only `status` and the
+SYSTEM-context `boot` task are exempt — `boot` only ever applies safe,
+never unlocks, so it cannot be abused to disable the cage.
+
+Change it any time from the tray (*Change password…*) or with
+`FaradayMode.bat setpw`. Forgetting the password is recoverable:
+boot into Windows Safe Mode, log in as a local admin, and delete
+`%ProgramData%\FaradayMode\auth.dat`.
+
+> The password is a soft lock: it stops casual remote toggles via SSH,
+> RDP, or PsExec, but a determined attacker who already has admin rights
+> on the box could bypass the .bat by running the underlying commands
+> directly. It is one layer in defense-in-depth, not a silver bullet.
+
 ## Install / uninstall
 
 Double-click `FaradayMode.bat` — it self-elevates (one UAC prompt) and
@@ -115,17 +139,40 @@ the firewall so no electrons leave the machine in the first place:
   in the services backup and come back to their original start mode on
   Normal Mode.
 
-### Hyper-V — VM management plane stopped, vSwitches torn down
+### Hyper-V — full kill (hypervisor + VBS + Credential Guard)
 
-VBS / HVCI / Credential Guard are deliberately **kept on** — those use
-the hypervisor to *protect* the OS. What gets stopped:
+> Trade-off: turning off VBS / HVCI / Credential Guard *weakens*
+> protection against kernel-level malware while Safe Mode is active —
+> those features use the hypervisor to *protect* the OS. They are
+> turned off here per explicit user request and are restored on Normal
+> Mode.
 
-- Host-side VM management: `vmms`, `vmcompute`, `HvHost`.
+- Host-side VM management: `vmms`, `vmcompute`, `HvHost`, `nvspwmi`.
 - Integration services: `vmickvpexchange`, `vmicguestinterface`,
   `vmicshutdown`, `vmicheartbeat`, `vmicrdv`, `vmictimesync`, `vmicvss`.
-- All `vEthernet*` host adapters (the host-side endpoints of any
-  external Hyper-V vSwitch) are disabled — kills WSL2 / Docker-Desktop
-  / external VM networking while Safe Mode is on.
+- All `vEthernet*` host adapters disabled (kills WSL2 / Docker /
+  external VM networking).
+- **Hypervisor itself off** at next boot:
+  `bcdedit /set {current} hypervisorlaunchtype off`.
+- VBS / HVCI / Credential Guard registry off:
+  - `EnableVirtualizationBasedSecurity = 0`
+  - `Scenarios\HypervisorEnforcedCodeIntegrity\Enabled = 0`
+  - `Lsa\LsaCfgFlags = 0`
+
+### Inbound shell daemons + unnecessary background services
+
+- **`sshd` and `ssh-agent`** are stopped and disabled — direct answer
+  to "no SSH that controls my machine".
+- A long list of telemetry / non-essential services is also stopped:
+  `BITS`, `DoSvc`, `MapsBroker`, `WerSvc`, `DPS`, `WdiServiceHost`,
+  `WdiSystemHost`, `PcaSvc`, `DsmSvc`, `DsSvc`, `lfsvc` (geolocation),
+  `PimIndexMaintenanceSvc`, `UnistoreSvc`, `UserDataSvc`, `CDPSvc`
+  (cross-device sync), `OneSyncSvc`, `WMPNetworkSvc`, `icssvc`
+  (mobile hotspot), `TapiSrv`, `AppVClient`, `PhoneSvc`,
+  `XblAuthManager`, `XblGameSave`, `XboxGipSvc`, `XboxNetApiSvc`,
+  `wisvc`, `RetailDemo`, `InstallService`, `ShellHWDetection`.
+- All start types are recorded in `services.txt` and restored exactly
+  on Normal Mode.
 
 ### VPN — torn down, IPsec keying disabled, tunnel drivers blocked
 

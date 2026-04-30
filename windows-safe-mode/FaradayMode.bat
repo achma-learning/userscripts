@@ -50,15 +50,40 @@ set "ROOT=%ProgramData%\FaradayMode"
 set "BACKUP=%ROOT%\backup"
 set "STATE=%ROOT%\state.flag"
 set "TRAYPID=%ROOT%\tray.pid"
+set "AUTHFILE=%ROOT%\auth.dat"
 set "FWBACKUP=%BACKUP%\firewall.wfw"
 set "SVCBACKUP=%BACKUP%\services.txt"
 set "HOSTSBACKUP=%BACKUP%\hosts.bak"
 set "INSTALLPS1=%~dp0install.ps1"
 set "UNINSTALLPS1=%~dp0uninstall.ps1"
+set "AUTHPS1=%~dp0auth.ps1"
 set "HOSTS=%SystemRoot%\System32\drivers\etc\hosts"
 
 if not exist "%ROOT%"   mkdir "%ROOT%"
 if not exist "%BACKUP%" mkdir "%BACKUP%"
+
+REM ---- AUTH GATE ------------------------------------------------------
+REM   Every interactive subcommand that *changes* state requires the
+REM   Faraday password. The boot scheduled task (SYSTEM, no console) is
+REM   exempt so the machine still re-applies safe at startup. `status`
+REM   is a read-only report so it is exempt too.
+REM   When auth.dat does not exist yet (first run before install),
+REM   verification is skipped - install.ps1 will set the password.
+if /i "%CMD%"=="boot"     goto :SKIP_AUTH
+if /i "%CMD%"=="status"   goto :SKIP_AUTH
+if /i "%CMD%"=="install"  goto :SKIP_AUTH
+if not exist "%AUTHFILE%" goto :SKIP_AUTH
+if not exist "%AUTHPS1%"  goto :SKIP_AUTH
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%AUTHPS1%" -Verify -AuthFile "%AUTHFILE%"
+if errorlevel 1 (
+    echo.
+    echo  [!] Authentication failed. Aborting.
+    echo.
+    timeout /t 3 >nul
+    exit /b 1
+)
+:SKIP_AUTH
 
 REM ---- dispatch -------------------------------------------------------
 if /i "%CMD%"=="status"        goto :STATUS
@@ -70,6 +95,7 @@ if /i "%CMD%"=="normal"        goto :DISABLE
 if /i "%CMD%"=="winsafe-min"   goto :WINSAFE_MIN
 if /i "%CMD%"=="winsafe-net"   goto :WINSAFE_NET
 if /i "%CMD%"=="winsafe-clear" goto :WINSAFE_CLEAR
+if /i "%CMD%"=="setpw"         goto :SETPW
 if /i "%CMD%"=="toggle" (
     if exist "%STATE%" ( goto :DISABLE ) else ( goto :ENABLE )
 )
@@ -81,6 +107,19 @@ REM =====================================================================
 :STATUS
 if exist "%STATE%" ( echo Faraday Mode: SAFE ) else ( echo Faraday Mode: NORMAL )
 exit /b 0
+
+REM =====================================================================
+:SETPW
+REM   Change (or set) the Faraday password. Re-uses the auth gate above
+REM   so the user must know the OLD password before they can set a new
+REM   one (unless none is set yet).
+if not exist "%AUTHPS1%" ( echo auth.ps1 not found. & exit /b 2 )
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%AUTHPS1%" -Set -AuthFile "%AUTHFILE%"
+set "RC=%errorlevel%"
+echo.
+timeout /t 3 >nul
+exit /b %RC%
 
 REM =====================================================================
 :INSTALL
@@ -143,6 +182,12 @@ for %%S in (
     SstpSvc IKEEXT WwanSvc PolicyAgent
     WlanSvc bthserv BTAGService BluetoothUserService BthHFSrv NcdAutoSetup
     NcaSvc NetTcpPortSharing
+    sshd ssh-agent
+    BITS DoSvc MapsBroker WerSvc DPS WdiServiceHost WdiSystemHost
+    PcaSvc DsmSvc DsSvc lfsvc PimIndexMaintenanceSvc UnistoreSvc UserDataSvc
+    CDPSvc OneSyncSvc WMPNetworkSvc icssvc TapiSrv AppVClient PhoneSvc
+    XblAuthManager XblGameSave XboxGipSvc XboxNetApiSvc wisvc RetailDemo
+    InstallService ShellHWDetection
 ) do (
     for /f "tokens=2*" %%A in ('sc qc "%%S" 2^>nul ^| find "START_TYPE"') do (
         >> "%SVCBACKUP%" echo %%S=%%B
@@ -219,18 +264,43 @@ for %%S in (TermService SessionEnv UmRdpService WinRM RemoteRegistry RemoteAcces
     sc config "%%S" start= disabled >nul 2>&1
 )
 
-REM ---- Hyper-V : stop the VM-management plane ------------------------
-REM   (We keep VBS / HVCI / Credential Guard - those USE the hypervisor
-REM    to protect the OS. We only stop the host-side VM management and
-REM    integration services, and tear down external vSwitches that
-REM    bridge to a physical NIC.)
-echo [*] Stopping Hyper-V VM management + integration services...
-for %%S in (vmms vmcompute HvHost vmickvpexchange vmicguestinterface vmicshutdown vmicheartbeat vmicrdv vmictimesync vmicvss) do (
+REM ---- Kill any inbound shell daemons --------------------------------
+REM   "no SSH that controls my machine" - explicitly kill OpenSSH server
+REM   and the agent, plus the legacy Telnet just in case.
+echo [*] Stopping inbound shell daemons (sshd, ssh-agent)...
+for %%S in (sshd ssh-agent) do (
+    sc stop   "%%S" >nul 2>&1
+    sc config "%%S" start= disabled >nul 2>&1
+)
+
+REM ---- Unnecessary background services -------------------------------
+echo [*] Disabling unnecessary background services...
+for %%S in (BITS DoSvc MapsBroker WerSvc DPS WdiServiceHost WdiSystemHost PcaSvc DsmSvc DsSvc lfsvc PimIndexMaintenanceSvc UnistoreSvc UserDataSvc CDPSvc OneSyncSvc WMPNetworkSvc icssvc TapiSrv AppVClient PhoneSvc XblAuthManager XblGameSave XboxGipSvc XboxNetApiSvc wisvc RetailDemo InstallService ShellHWDetection) do (
+    sc stop   "%%S" >nul 2>&1
+    sc config "%%S" start= disabled >nul 2>&1
+)
+
+REM ---- Hyper-V : full kill -------------------------------------------
+REM   Per user request: ALL Hyper-V off in Safe Mode, including the
+REM   hypervisor itself + VBS / HVCI / Credential Guard. NOTE: this
+REM   *weakens* protection against kernel-level malware while Safe Mode
+REM   is active - those features USE the hypervisor to protect the OS.
+REM   Reverted in :DISABLE.
+echo [*] Stopping ALL Hyper-V services...
+for %%S in (vmms vmcompute HvHost vmickvpexchange vmicguestinterface vmicshutdown vmicheartbeat vmicrdv vmictimesync vmicvss nvspwmi) do (
     sc stop   "%%S" >nul 2>&1
     sc config "%%S" start= disabled >nul 2>&1
 )
 echo [*] Disabling Hyper-V vSwitch host adapters (vEthernet*)...
 powershell -NoProfile -Command "Get-NetAdapter -Name 'vEthernet*' -ErrorAction SilentlyContinue | Disable-NetAdapter -Confirm:$false -ErrorAction SilentlyContinue" 2>nul
+
+echo [*] Disabling hypervisor launch (takes effect at next boot)...
+bcdedit /set "{current}" hypervisorlaunchtype off >nul 2>&1
+
+echo [*] Disabling VBS / HVCI / Credential Guard (takes effect at next boot)...
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v EnableVirtualizationBasedSecurity /t REG_DWORD /d 0 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v Enabled /t REG_DWORD /d 0 /f >nul
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LsaCfgFlags /t REG_DWORD /d 0 /f >nul
 
 REM ---- VPN : tear down + lock out ------------------------------------
 echo [*] Disconnecting all active VPN/dial-up connections...
@@ -384,6 +454,13 @@ reg add "HKLM\SYSTEM\CurrentControlSet\Services\PptpMiniport" /v Start /t REG_DW
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\L2tpMiniport" /v Start /t REG_DWORD /d 3 /f >nul 2>&1
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\SstpMiniport" /v Start /t REG_DWORD /d 3 /f >nul 2>&1
 reg add "HKLM\SYSTEM\CurrentControlSet\Services\AgileVpn"     /v Start /t REG_DWORD /d 3 /f >nul 2>&1
+
+REM ---- Re-enable hypervisor + VBS / HVCI / Credential Guard ---------
+echo [*] Re-enabling hypervisor + VBS / HVCI / Credential Guard...
+bcdedit /set "{current}" hypervisorlaunchtype auto >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v EnableVirtualizationBasedSecurity /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v Enabled /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v LsaCfgFlags /f >nul 2>&1
 
 REM ---- Revert registry hardening --------------------------------------
 echo [*] Reverting registry hardening...

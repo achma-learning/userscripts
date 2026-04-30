@@ -50,12 +50,13 @@ $miWinSafeClr = New-Object System.Windows.Forms.ToolStripMenuItem 'Reboot normal
 [void]$miRestart.DropDownItems.AddRange(@($miWinSafeMin,$miWinSafeNet,$miWinSafeClr))
 
 $miSep3     = New-Object System.Windows.Forms.ToolStripSeparator
+$miSetPw    = New-Object System.Windows.Forms.ToolStripMenuItem 'Change password...'
 $miOpen     = New-Object System.Windows.Forms.ToolStripMenuItem 'Open backup folder'
 $miUninst   = New-Object System.Windows.Forms.ToolStripMenuItem 'Uninstall (revert + remove autostart)'
 $miSep4     = New-Object System.Windows.Forms.ToolStripSeparator
 $miQuit     = New-Object System.Windows.Forms.ToolStripMenuItem 'Quit tray'
 
-[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miNormal,$miSep2,$miRestart,$miSep3,$miOpen,$miUninst,$miSep4,$miQuit))
+[void]$ctx.Items.AddRange(@($miStatus,$miSep1,$miSafe,$miNormal,$miSep2,$miRestart,$miSep3,$miSetPw,$miOpen,$miUninst,$miSep4,$miQuit))
 $icon.ContextMenuStrip = $ctx
 
 function Invoke-Bat([string]$arg) {
@@ -82,6 +83,7 @@ $miQuit.Add_Click({ $script:Quit = $true })
 $miWinSafeMin.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode (Minimal).')              { Invoke-Bat 'winsafe-min'   } })
 $miWinSafeNet.Add_Click({ if (Confirm-Reboot 'Reboot into Windows Safe Mode with Networking.')        { Invoke-Bat 'winsafe-net'   } })
 $miWinSafeClr.Add_Click({ if (Confirm-Reboot 'Clear Safe Boot flag and reboot normally into Windows.') { Invoke-Bat 'winsafe-clear' } })
+$miSetPw.Add_Click(     { Invoke-Bat 'setpw' })
 
 # Left-click toggles mode (matches WFC behaviour).
 $icon.Add_MouseClick({
