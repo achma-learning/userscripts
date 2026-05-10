@@ -2,7 +2,7 @@
 // @name         google-custom
 // @namespace    google-custom
 // @description  v4 minimalist + power-user suite: Google anti-tracking + cleanURL + endless scroll + search blocklist + YouTube old-UI + anti-shorts + hardened ad skip/mute/speed + age bypass + region setter + grid + focus mode + remaining time + playback resume + Drive/Gmail link unwrap
-// @version      4.2.0
+// @version      4.3.0
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=YouTube.com
 // @license      MIT
 // @run-at       document-start
@@ -233,10 +233,38 @@
  * ║  MODULE 12: Google Search Blocklist (hide sites from results)   ║
  * ║  MODULE 13: YouTube Playback Resume (Plox-style, local only)    ║
  * ║  MODULE 14: Drive/Gmail/Search URL Unwrap (out-of-domain hops)  ║
+ * ║  MODULE 15: Google Search Two-Column Layout (AC-Baidu inspired) ║
  * ║  FEATURE:   5-Column Home/Subscriptions Grid Layout             ║
  * ║  FEATURE:   Hover Preview Blocker (enhanced)                    ║
  * ║  FEATURE:   Settings Panel (Ctrl+?) + Floating Gear Button      ║
  * ╚══════════════════════════════════════════════════════════════════╝
+ *
+ * v4.3.0 — Two-column Google Search + HUD visuals:
+ *
+ *  NEW     — MODULE 15: Google Search two-column layout
+ *            • Renders organic results in 2 columns via CSS Grid on
+ *              #rso (inspired by AC-Baidu greasyfork #14178)
+ *            • Special blocks (knowledge panel, People Also Ask,
+ *              featured snippet, video/image carousels, breadcrumb
+ *              cards, endless-scroll dividers, footer) span both
+ *              columns via :has() selectors so layout never breaks
+ *            • Auto-collapses to 1 column below 1100px viewport
+ *            • Right-side knowledge sidebar (#rhs) is hidden so the
+ *              two columns get the full width
+ *            • Pure CSS — instant on/off via `gc-2col` class on <html>
+ *            • Toggle in settings panel under "Region & Search",
+ *              default OFF (opt-in)
+ *
+ *  NEW     — Remaining-Time HUD: size + opacity controls
+ *            • Two new settings (hudFontSize, hudOpacity) drive
+ *              CSS custom properties --gc-hud-size and
+ *              --gc-hud-opacity on a small live-updating <style>
+ *              element — saving rewrites a single :root declaration
+ *            • Size: 24…96px (clamped responsively to viewport vw)
+ *            • Opacity: 0.3…1.0 (also dims the backdrop tint
+ *              proportionally so low-opacity stays clean)
+ *            • Controls live next to "Remaining Time HUD" toggle
+ *              under Playback
  *
  * v4.2.0 — Per-script font sizing + Remaining-Time HUD:
  *
@@ -395,8 +423,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     papyrusLatinSize: 18,    // px — base font-size for Latin text in papyrus mode
     papyrusArabicSize: 22,   // px — base font-size for Arabic text in papyrus mode (defaults larger; Arabic glyphs typically need more height for legibility)
     // --- v4 additions ---
-    playbackResume: true,   // Module 13: remember per-video playback position locally
-    urlUnwrap: true,        // Module 14: unwrap Google /url?q= and Drive/Gmail wrappers
+    playbackResume: true,    // Module 13: remember per-video playback position locally
+    urlUnwrap: true,         // Module 14: unwrap Google /url?q= and Drive/Gmail wrappers
+    googleTwoColumn: false,  // Module 15: render Google Search results in 2 columns
+    hudFontSize: 48,         // px — base size for Remaining-Time HUD (clamped responsively)
+    hudOpacity: 0.92,        // 0..1 — overlay opacity
 });
 
 function _loadSettings() {
@@ -701,6 +732,20 @@ function applyPapyrusSizes() {
 applyPapyrusSizes();
 _appendToHead(_papyrusSizeStyleEl);
 
+// --- HUD visuals (size + opacity) — same live-update pattern ---
+const _hudVisualsStyleEl = document.createElement('style');
+_hudVisualsStyleEl.id = '__gc_hud_visuals';
+function applyHudVisuals() {
+    const size = parseInt(SUITE_SETTINGS.hudFontSize, 10) || 48;
+    let op = parseFloat(SUITE_SETTINGS.hudOpacity);
+    if (isNaN(op)) op = 0.92;
+    op = Math.max(0.1, Math.min(1, op)); // clamp to a sane range
+    _hudVisualsStyleEl.textContent =
+        ':root { --gc-hud-size: ' + size + 'px; --gc-hud-opacity: ' + op + '; }';
+}
+applyHudVisuals();
+_appendToHead(_hudVisualsStyleEl);
+
 function applyPapyrusFont() {
     if (SUITE_SETTINGS.papyrusFont) document.documentElement.classList.add('pyt-papyrus');
     else document.documentElement.classList.remove('pyt-papyrus');
@@ -708,6 +753,13 @@ function applyPapyrusFont() {
 
 // Apply immediately (before DOM ready — class on <html> is available at document-start)
 applyPapyrusFont();
+
+// --- Google Two-Column Layout class toggle (hoisted; CSS injected by Module 15) ---
+function applyGoogleTwoColumn() {
+    if (SUITE_SETTINGS.googleTwoColumn) document.documentElement.classList.add('gc-2col');
+    else document.documentElement.classList.remove('gc-2col');
+}
+applyGoogleTwoColumn();
 
 
 function createSettingsPanel() {
@@ -777,7 +829,7 @@ function createSettingsPanel() {
     const panel = _el('div', { id: 'pyt-settings-panel' });
 
     // Header
-    panel.appendChild(_el('h2', { textContent: '\u26A1 google-custom v4.2.0' }));
+    panel.appendChild(_el('h2', { textContent: '\u26A1 google-custom v4.3.0' }));
 
     // --- Region & Search ---
     panel.appendChild(sectionTitle('Region & Search'));
@@ -794,6 +846,8 @@ function createSettingsPanel() {
 
     panel.appendChild(settingRow('Unwrap Google Redirects', 'Rewrite /url?q= wrappers + strip Drive ?usp= tokens (Search · Drive · Gmail)',
         toggle('gc-unwrap', SUITE_SETTINGS.urlUnwrap)));
+    panel.appendChild(settingRow('Two-Column Search Results', 'Render Google Search organic results in 2 columns · special blocks span both · auto-collapse below 1100px',
+        toggle('gc-2col', SUITE_SETTINGS.googleTwoColumn)));
 
     // --- Search Blocklist ---
     panel.appendChild(sectionTitle('Search Blocklist'));
@@ -831,8 +885,12 @@ function createSettingsPanel() {
         toggle('pyt-fullscreen', SUITE_SETTINGS.autoFullscreen), true));
     panel.appendChild(settingRow('Default Playback Speed', 'Alt+1/2/3/4 for quick presets',
         selectInput('pyt-speed', [1, 1.25, 1.5, 1.75, 2, 3], SUITE_SETTINGS.defaultSpeed), true));
-    panel.appendChild(settingRow('Remaining Time Display', 'Show time left (rate-adjusted) in player',
+    panel.appendChild(settingRow('Remaining Time HUD', 'Show centered HUD with time left (rate-adjusted)',
         toggle('pyt-remaining', SUITE_SETTINGS.remainingTime), true));
+    panel.appendChild(settingRow('HUD Size', 'Base size for the Remaining Time HUD (scales with viewport)',
+        selectInput('gc-hud-size', [24, 32, 40, 48, 56, 64, 72, 84, 96], SUITE_SETTINGS.hudFontSize, 'px'), true));
+    panel.appendChild(settingRow('HUD Opacity', 'Transparency of the HUD overlay (1.0 = fully opaque)',
+        selectInput('gc-hud-opacity', [0.3, 0.5, 0.7, 0.85, 0.92, 1.0], SUITE_SETTINGS.hudOpacity, ''), true));
     panel.appendChild(settingRow('Resume Playback', 'Remember last position per video (local only, no login)',
         toggle('gc-resume', SUITE_SETTINGS.playbackResume), true));
 
@@ -894,6 +952,15 @@ function saveAndCloseSettings() {
     // v4 toggles (defensive: tolerate missing elements if a section was hidden)
     var gcUnwrap = document.getElementById('gc-unwrap');
     if (gcUnwrap) SUITE_SETTINGS.urlUnwrap = gcUnwrap.checked;
+    var gc2col = document.getElementById('gc-2col');
+    if (gc2col) SUITE_SETTINGS.googleTwoColumn = gc2col.checked;
+    var gcHudSize = document.getElementById('gc-hud-size');
+    if (gcHudSize) SUITE_SETTINGS.hudFontSize = parseInt(gcHudSize.value, 10) || 48;
+    var gcHudOpacity = document.getElementById('gc-hud-opacity');
+    if (gcHudOpacity) {
+        var op = parseFloat(gcHudOpacity.value);
+        SUITE_SETTINGS.hudOpacity = isNaN(op) ? 0.92 : op;
+    }
     var gcResume = document.getElementById('gc-resume');
     if (gcResume) SUITE_SETTINGS.playbackResume = gcResume.checked;
     _saveSettings(SUITE_SETTINGS);
@@ -901,6 +968,8 @@ function saveAndCloseSettings() {
     // Apply live changes (global)
     applyPapyrusFont();
     if (typeof applyPapyrusSizes === 'function') applyPapyrusSizes();
+    if (typeof applyGoogleTwoColumn === 'function') applyGoogleTwoColumn();
+    if (typeof applyHudVisuals === 'function') applyHudVisuals();
 
     // Apply live changes if on YouTube
     if (ENV.isYouTube) {
@@ -1416,6 +1485,121 @@ _safeRun('Module14:UrlUnwrap', function() {
 
 
 // ============================================================
+// MODULE 15: GOOGLE SEARCH TWO-COLUMN LAYOUT
+// ============================================================
+// Inspired by AC-Baidu (greasyfork #14178). Renders organic search
+// results in two columns via CSS Grid on #rso. Special blocks
+// (knowledge panel, People Also Ask, featured snippet, video/image
+// carousels, breadcrumb cards, endless-scroll dividers) span both
+// columns so they don't break visually.
+//
+// Pure CSS — toggled by adding/removing `gc-2col` on <html>. Below a
+// 1100px viewport the grid collapses to 1 column automatically.
+//
+// Caveats:
+//   • Uses :has() (Chrome 105+, Safari 15.4+, Firefox 121+). Older
+//     Firefox falls back to a single-column layout for special
+//     blocks — they appear in the left column instead of spanning,
+//     which is harmless.
+//   • Google occasionally renames result-block class hashes. We
+//     match on stable structural selectors (#rso > div, [data-hveid])
+//     plus a few known-stable classes for special blocks.
+if (ENV.isGoogleSearch && location.pathname === '/search') {
+_safeRun('Module15:GoogleTwoColumn', function() {
+    const styleEl = document.createElement('style');
+    styleEl.id = '__gc_two_column';
+    styleEl.textContent = [
+        '/* Widen the search container so two columns have room */',
+        'html.gc-2col #search,',
+        'html.gc-2col #center_col,',
+        'html.gc-2col #rcnt {',
+        '    max-width: none !important;',
+        '    width: calc(100vw - 60px) !important;',
+        '}',
+        /* The left/right gutters Google uses to keep results centered */
+        'html.gc-2col #cnt,',
+        'html.gc-2col .GyAeWb {',
+        '    max-width: none !important;',
+        '}',
+        '',
+        '/* Two-column grid on the results container */',
+        'html.gc-2col #rso {',
+        '    display: grid !important;',
+        '    grid-template-columns: 1fr 1fr !important;',
+        '    column-gap: 24px !important;',
+        '    row-gap: 8px !important;',
+        '    align-items: start !important;',
+        '    max-width: 100% !important;',
+        '}',
+        '',
+        '/* Each result block fills its grid cell */',
+        'html.gc-2col #rso > div,',
+        'html.gc-2col #rso > .MjjYud,',
+        'html.gc-2col #rso > .g {',
+        '    max-width: 100% !important;',
+        '    width: 100% !important;',
+        '    margin: 0 !important;',
+        '    box-sizing: border-box !important;',
+        '}',
+        '',
+        '/* Special blocks must span both columns to avoid layout breaks. */',
+        '/* :has() selector (well-supported in Chromium/Safari, Firefox 121+).*/',
+        'html.gc-2col #rso > div:has(.kp-blk),',                  // knowledge panel
+        'html.gc-2col #rso > div:has(.related-question-pair),',   // People Also Ask
+        'html.gc-2col #rso > div:has(.ULSxyf),',                  // featured snippet wrapper
+        'html.gc-2col #rso > div:has(g-section-with-header),',    // top stories / videos
+        'html.gc-2col #rso > div:has(.cUnQKe),',                  // horizontal video carousel
+        'html.gc-2col #rso > div:has([data-attrid="kc:/local:one_box"]),', // local map block
+        'html.gc-2col #rso > div:has(g-scrolling-carousel),',     // image/video scrolling
+        'html.gc-2col #rso > div:has(twitter-card-renderer),',    // tweet card
+        'html.gc-2col #rso > div:has(a[aria-label*="Related searches" i]),',
+        'html.gc-2col #rso > div:has(.brs_col),',                 // related searches block
+        'html.gc-2col #rso > .gc-page-divider,',                  // endless-scroll divider (Module 6)
+        'html.gc-2col #rso > .pyt-page-divider,',                 // legacy divider class
+        'html.gc-2col #rso > div[data-async-context*="related"] {',
+        '    grid-column: 1 / -1 !important;',
+        '}',
+        '',
+        '/* Pagination + footer always span */',
+        'html.gc-2col #botstuff,',
+        'html.gc-2col #appbar,',
+        'html.gc-2col #foot {',
+        '    grid-column: 1 / -1 !important;',
+        '    max-width: 100% !important;',
+        '    width: 100% !important;',
+        '}',
+        '',
+        '/* Reserve a sensible read-width for snippets in narrow columns */',
+        'html.gc-2col #rso .VwiC3b,',
+        'html.gc-2col #rso .yXK7lf {',
+        '    max-width: 100% !important;',
+        '}',
+        '',
+        '/* Right-side knowledge sidebar would visually fight with 2-col;   */',
+        '/* push it underneath the results so columns get the full width.  */',
+        'html.gc-2col #rhs {',
+        '    display: none !important;',
+        '}',
+        '',
+        '/* Responsive collapse: below ~1100px viewport, two cols cramp.   */',
+        '@media (max-width: 1100px) {',
+        '    html.gc-2col #rso { grid-template-columns: 1fr !important; }',
+        '    html.gc-2col #search,',
+        '    html.gc-2col #center_col,',
+        '    html.gc-2col #rcnt {',
+        '        width: auto !important;',
+        '    }',
+        '}'
+    ].join('\n');
+    _appendToHead(styleEl);
+    // The `gc-2col` class is toggled by applyGoogleTwoColumn() (hoisted at
+    // module scope) — both at script start and live from the settings panel.
+    applyGoogleTwoColumn();
+}); // END Module 15
+} // end if Google Search
+
+
+// ============================================================
 // MODULE 1: GOOGLE ANTI-TRACK (Don't Track Me Google v4.30+)
 // ============================================================
 _safeRun('Module1:GoogleAntiTrack', function() {
@@ -1761,6 +1945,10 @@ ytCSS += 'html.pyt-focus-mode .ytp-endscreen-content{display:none!important}';
 // Fighter-jet / car-dashboard style overlay: centered horizontally,
 // just below vertical center. Big monospaced glyphs with cyan glow.
 // pointer-events:none so it never intercepts player clicks.
+// Size and opacity are driven by --gc-hud-size / --gc-hud-opacity custom
+// properties so the settings panel can update them live (see
+// applyHudVisuals() below). Defaults inlined so the HUD is sane even before
+// settings are applied.
 ytCSS += '#pyt-remaining-hud{' +
     'position:fixed!important;' +
     'left:50%!important;' +
@@ -1770,7 +1958,8 @@ ytCSS += '#pyt-remaining-hud{' +
     'z-index:2147483600!important;' + // above the player chrome (2147483647 is the system max)
     'font-family:"JetBrains Mono","Fira Code","Consolas","Menlo","Roboto Mono",ui-monospace,monospace!important;' +
     'font-weight:600!important;' +
-    'font-size:clamp(28px,4.5vw,72px)!important;' +
+    // clamp lower bound so it stays readable on tiny windows; vw scales with width
+    'font-size:clamp(20px, calc(var(--gc-hud-size, 48px) * 0.6 + 1.2vw), calc(var(--gc-hud-size, 48px) * 1.4))!important;' +
     'letter-spacing:0.06em!important;' +
     'color:#7CFCFF!important;' +              // HUD cyan
     'text-shadow:' +
@@ -1780,18 +1969,18 @@ ytCSS += '#pyt-remaining-hud{' +
         '0 1px 0 rgba(0,0,0,0.6)!important;' + // subtle grounding shadow
     'padding:6px 18px!important;' +
     'border-radius:6px!important;' +
-    'background:rgba(0,0,0,0.18)!important;' +
+    'background:rgba(0,0,0, calc(var(--gc-hud-opacity, 0.92) * 0.2))!important;' +
     'backdrop-filter:blur(2px)!important;' +
     '-webkit-backdrop-filter:blur(2px)!important;' +
-    'opacity:0.92!important;' +
+    'opacity:var(--gc-hud-opacity, 0.92)!important;' +
     'transition:opacity 0.18s ease-out!important;' +
     'user-select:none!important;' +
     'white-space:nowrap!important;' +
 '}';
 // Hide the HUD when the in-page video isn\'t in a "we should show time" state
 ytCSS += '#pyt-remaining-hud.pyt-hud-hidden{opacity:0!important}';
-// Slight scale-down in fullscreen so it doesn\'t dominate the view
-ytCSS += ':fullscreen #pyt-remaining-hud,:-webkit-full-screen #pyt-remaining-hud{font-size:clamp(36px,3.5vw,84px)!important;top:65%!important;opacity:0.85!important}';
+// Fullscreen tweak: nudge slightly downward; size still scales from --gc-hud-size
+ytCSS += ':fullscreen #pyt-remaining-hud,:-webkit-full-screen #pyt-remaining-hud{top:65%!important;opacity:calc(var(--gc-hud-opacity, 0.92) * 0.92)!important}';
 // Keep an invisible marker class for the legacy in-player span (no longer used,
 // but defensive in case some other code references it).
 ytCSS += '.pyt-remaining-time{display:none!important}';
