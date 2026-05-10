@@ -2,7 +2,7 @@
 // @name         google-custom
 // @namespace    google-custom
 // @description  v4 minimalist + power-user suite: Google anti-tracking + cleanURL + endless scroll + search blocklist + YouTube old-UI + anti-shorts + hardened ad skip/mute/speed + age bypass + region setter + grid + focus mode + remaining time + playback resume + Drive/Gmail link unwrap
-// @version      4.0.0
+// @version      4.1.0
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=YouTube.com
 // @license      MIT
 // @run-at       document-start
@@ -237,6 +237,19 @@
  * ║  FEATURE:   Hover Preview Blocker (enhanced)                    ║
  * ║  FEATURE:   Settings Panel (Ctrl+?) + Floating Gear Button      ║
  * ╚══════════════════════════════════════════════════════════════════╝
+ *
+ * v4.1.0 — Bilingual font mode:
+ *
+ *  CHANGED — Alt+P now toggles a single bilingual mode instead of
+ *            Latin-only Papyrus. The two modes are:
+ *              1. normal   — site default fonts
+ *              2. papyrus  — Papyrus for Latin script
+ *                          + KFGQPC Uthman Taha Naskh Regular for Arabic
+ *            Implemented via @font-face + unicode-range so a single
+ *            font-family declaration routes Arabic codepoints to the
+ *            Naskh face and everything else to Papyrus. Falls back
+ *            through Amiri / Scheherazade New / Traditional Arabic if
+ *            KFGQPC isn't installed locally. No network fetch.
  *
  * v4.0.0 — Renamed to google-custom; merged ideas from FairBlock,
  *          Mute_Ads, Ad-Bypass, Playback Plox, No-Cookies. Direct
@@ -534,12 +547,56 @@ _globalStyleEl.textContent = `
 `;
 _appendToHead(_globalStyleEl);
 
-// --- Papyrus Font System ---
-// Separate <style> element so it can be toggled on/off without rebuilding all CSS
+// --- Papyrus + Naskh Font System ---
+// Toggled on/off via Alt+P. Two modes:
+//   1. normal      — site default fonts
+//   2. papyrus     — Papyrus for Latin script + KFGQPC Uthman Taha Naskh
+//                    Regular for Arabic script (auto-selected by codepoint)
+//
+// The Arabic switch is done with @font-face + unicode-range so a single
+// font-family declaration transparently uses Papyrus for Latin glyphs
+// and Naskh for Arabic glyphs. If KFGQPC Uthman Taha Naskh isn't
+// installed locally, src: local() falls back through other Naskh fonts
+// before reverting to the system default. No network fetch.
 const _papyrusStyleEl = document.createElement('style');
 _papyrusStyleEl.id = '__pyt_papyrus_font';
 _papyrusStyleEl.textContent = [
-    '/* === PAPYRUS FONT MODE === */',
+    '/* === ARABIC NASKH FACE — KFGQPC Uthman Taha Naskh Regular === */',
+    '/* unicode-range covers: Arabic, Arabic Supplement, Arabic Extended-A, */',
+    '/* Arabic Presentation Forms-A, Arabic Presentation Forms-B           */',
+    '@font-face {',
+    '    font-family: "GCustomArabic";',
+    '    font-style: normal;',
+    '    font-weight: 400;',
+    '    font-display: swap;',
+    '    src: local("KFGQPC Uthman Taha Naskh Regular"),',
+    '         local("KFGQPC Uthman Taha Naskh"),',
+    '         local("KFGQPC-UthmanTahaNaskh"),',
+    '         local("KFGQPC Uthmanic Script HAFS"),',
+    '         local("Amiri"),',
+    '         local("Scheherazade New"),',
+    '         local("Traditional Arabic");',
+    '    unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF;',
+    '}',
+    '/* Same face, bold/italic synthesized from regular if those weights exist */',
+    '@font-face {',
+    '    font-family: "GCustomArabic";',
+    '    font-style: normal;',
+    '    font-weight: 700;',
+    '    font-display: swap;',
+    '    src: local("KFGQPC Uthman Taha Naskh Bold"),',
+    '         local("KFGQPC Uthman Taha Naskh Regular"),',
+    '         local("KFGQPC Uthman Taha Naskh"),',
+    '         local("Amiri Bold"),',
+    '         local("Scheherazade New Bold"),',
+    '         local("Traditional Arabic");',
+    '    unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF;',
+    '}',
+    '',
+    '/* === PAPYRUS + NASKH MODE === */',
+    '/* The font-family stack lists GCustomArabic FIRST: thanks to unicode-range, */',
+    '/* it only ever resolves for Arabic codepoints — Latin falls through to     */',
+    '/* Papyrus, which is itself the intended Latin face.                        */',
     'html.pyt-papyrus body, html.pyt-papyrus div, html.pyt-papyrus p,',
     'html.pyt-papyrus span, html.pyt-papyrus a, html.pyt-papyrus li,',
     'html.pyt-papyrus td, html.pyt-papyrus th, html.pyt-papyrus input,',
@@ -551,7 +608,15 @@ _papyrusStyleEl.textContent = [
     'html.pyt-papyrus code, html.pyt-papyrus figcaption, html.pyt-papyrus article,',
     'html.pyt-papyrus section, html.pyt-papyrus header, html.pyt-papyrus footer,',
     'html.pyt-papyrus nav, html.pyt-papyrus aside, html.pyt-papyrus main {',
-    '    font-family: Papyrus, "Papyrus Condensed", fantasy !important;',
+    '    font-family: "GCustomArabic", Papyrus, "Papyrus Condensed", fantasy !important;',
+    '}',
+    '/* Explicit RTL / lang=ar override — some sites force a font-family on .rtl */',
+    '/* containers; this guarantees Arabic text always lands on the Naskh face. */',
+    'html.pyt-papyrus [lang="ar"], html.pyt-papyrus [lang^="ar-"],',
+    'html.pyt-papyrus [dir="rtl"] {',
+    '    font-family: "GCustomArabic", "KFGQPC Uthman Taha Naskh Regular",',
+    '        "KFGQPC Uthman Taha Naskh", Amiri, "Scheherazade New",',
+    '        "Traditional Arabic", serif !important;',
     '}',
     '/* Bigger font for readability */',
     'html.pyt-papyrus body {',
@@ -578,7 +643,7 @@ _papyrusStyleEl.textContent = [
     'html.pyt-papyrus .ytd-channel-name,',
     'html.pyt-papyrus #info-strings,',
     'html.pyt-papyrus #description {',
-    '    font-family: Papyrus, "Papyrus Condensed", fantasy !important;',
+    '    font-family: "GCustomArabic", Papyrus, "Papyrus Condensed", fantasy !important;',
     '    font-size: 16px !important;',
     '}',
     '/* Keep settings panel readable */',
@@ -659,7 +724,7 @@ function createSettingsPanel() {
     const panel = _el('div', { id: 'pyt-settings-panel' });
 
     // Header
-    panel.appendChild(_el('h2', { textContent: '\u26A1 google-custom v4.0.0' }));
+    panel.appendChild(_el('h2', { textContent: '\u26A1 google-custom v4.1.0' }));
 
     // --- Region & Search ---
     panel.appendChild(sectionTitle('Region & Search'));
@@ -698,7 +763,7 @@ function createSettingsPanel() {
 
     // --- Appearance ---
     panel.appendChild(sectionTitle('Appearance'));
-    panel.appendChild(settingRow('Papyrus Font (Alt+P)', 'Classic Papyrus font + bigger text for readability',
+    panel.appendChild(settingRow('Papyrus + Naskh Font (Alt+P)', 'Papyrus for Latin · KFGQPC Uthman Taha Naskh Regular for Arabic · bigger readable text',
         toggle('pyt-papyrus', SUITE_SETTINGS.papyrusFont)));
 
     // --- Playback ---
