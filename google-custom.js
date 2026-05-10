@@ -2,7 +2,7 @@
 // @name         google-custom
 // @namespace    google-custom
 // @description  v4 minimalist + power-user suite: Google anti-tracking + cleanURL + endless scroll + search blocklist + YouTube old-UI + anti-shorts + hardened ad skip/mute/speed + age bypass + region setter + grid + focus mode + remaining time + playback resume + Drive/Gmail link unwrap
-// @version      4.1.0
+// @version      4.2.0
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=YouTube.com
 // @license      MIT
 // @run-at       document-start
@@ -227,7 +227,7 @@
  * ║  MODULE 6:  Google Endless Scroll (Infinite Search Pages)       ║
  * ║  MODULE 7:  YouTube & Google Region Setter                      ║
  * ║  MODULE 8:  YouTube Productivity Tools                          ║
- * ║  MODULE 9:  Remaining Time Display (playback-rate aware)        ║
+ * ║  MODULE 9:  Remaining Time HUD (centered, glow, fullscreen-safe)║
  * ║  MODULE 10: Focus Mode (hide distractions on watch page)        ║
  * ║  MODULE 11: Google Search URL Cleaner (strip tracking params)   ║
  * ║  MODULE 12: Google Search Blocklist (hide sites from results)   ║
@@ -237,6 +237,24 @@
  * ║  FEATURE:   Hover Preview Blocker (enhanced)                    ║
  * ║  FEATURE:   Settings Panel (Ctrl+?) + Floating Gear Button      ║
  * ╚══════════════════════════════════════════════════════════════════╝
+ *
+ * v4.2.0 — Per-script font sizing + Remaining-Time HUD:
+ *
+ *  NEW     — Settings panel exposes two size controls under Appearance:
+ *              • Latin Font Size  — drives Papyrus body/text
+ *              • Arabic Font Size — drives KFGQPC Naskh text on
+ *                                   lang="ar" / dir="rtl" containers
+ *            Sizes are written to CSS custom properties (--gc-latin-size
+ *            and --gc-arabic-size) so saving rewrites a single
+ *            declaration instead of the whole stylesheet.
+ *  CHANGED — Remaining Time Display is now a fighter-jet / car-dashboard
+ *            HUD: fixed-position, centered horizontally, slightly below
+ *            vertical center (62%), monospaced, cyan with a soft glow,
+ *            pointer-events:none. Hides during ads, on live streams,
+ *            and when the video has been paused for >2s. Re-parents into
+ *            #movie_player on fullscreenchange so it stays visible in
+ *            fullscreen. The legacy in-player ".pyt-remaining-time"
+ *            span is retired.
  *
  * v4.1.0 — Bilingual font mode:
  *
@@ -374,6 +392,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     blockedSites: '',
     presetSocialMedia: false,
     papyrusFont: true,
+    papyrusLatinSize: 18,    // px — base font-size for Latin text in papyrus mode
+    papyrusArabicSize: 22,   // px — base font-size for Arabic text in papyrus mode (defaults larger; Arabic glyphs typically need more height for legibility)
     // --- v4 additions ---
     playbackResume: true,   // Module 13: remember per-video playback position locally
     urlUnwrap: true,        // Module 14: unwrap Google /url?q= and Drive/Gmail wrappers
@@ -618,9 +638,10 @@ _papyrusStyleEl.textContent = [
     '        "KFGQPC Uthman Taha Naskh", Amiri, "Scheherazade New",',
     '        "Traditional Arabic", serif !important;',
     '}',
-    '/* Bigger font for readability */',
+    '/* Body size derives from --gc-latin-size; Arabic size is applied via the */',
+    '/* :lang/[dir="rtl"] rules below (CSS cannot size by Unicode-range alone). */',
     'html.pyt-papyrus body {',
-    '    font-size: 18px !important;',
+    '    font-size: var(--gc-latin-size, 18px) !important;',
     '    line-height: 1.6 !important;',
     '}',
     'html.pyt-papyrus .g .VwiC3b,',  // Google search snippet text
@@ -628,12 +649,12 @@ _papyrusStyleEl.textContent = [
     'html.pyt-papyrus .g .yXK7lf,',
     'html.pyt-papyrus .g .VwiC3b span,',
     'html.pyt-papyrus [data-sncf] {',
-    '    font-size: 16px !important;',
+    '    font-size: calc(var(--gc-latin-size, 18px) - 2px) !important;',
     '    line-height: 1.5 !important;',
     '}',
     'html.pyt-papyrus h3,',  // Google search result titles
     'html.pyt-papyrus .LC20lb {',
-    '    font-size: 22px !important;',
+    '    font-size: calc(var(--gc-latin-size, 18px) + 4px) !important;',
     '}',
     '/* YouTube titles and text */',
     'html.pyt-papyrus #video-title,',
@@ -644,7 +665,20 @@ _papyrusStyleEl.textContent = [
     'html.pyt-papyrus #info-strings,',
     'html.pyt-papyrus #description {',
     '    font-family: "GCustomArabic", Papyrus, "Papyrus Condensed", fantasy !important;',
-    '    font-size: 16px !important;',
+    '    font-size: calc(var(--gc-latin-size, 18px) - 2px) !important;',
+    '}',
+    '/* Arabic-only size override: applies to elements explicitly tagged with  */',
+    '/* lang="ar"/lang^="ar-"/dir="rtl". Mixed inline content can\'t be sized */',
+    '/* per-codepoint with pure CSS — the unicode-range face still selects   */',
+    '/* the correct Naskh GLYPHS, just at the surrounding element\'s size.    */',
+    'html.pyt-papyrus [lang="ar"], html.pyt-papyrus [lang^="ar-"],',
+    'html.pyt-papyrus [dir="rtl"] {',
+    '    font-size: var(--gc-arabic-size, 22px) !important;',
+    '    line-height: 1.7 !important;',
+    '}',
+    'html.pyt-papyrus [lang="ar"] *, html.pyt-papyrus [lang^="ar-"] *,',
+    'html.pyt-papyrus [dir="rtl"] * {',
+    '    font-size: inherit !important;',
     '}',
     '/* Keep settings panel readable */',
     '#pyt-settings-panel, #pyt-settings-panel * {',
@@ -652,6 +686,20 @@ _papyrusStyleEl.textContent = [
     '}'
 ].join('\n');
 _appendToHead(_papyrusStyleEl);
+
+// --- Live-updatable size variables ---
+// Stored in a separate <style> so saving new sizes from the panel only
+// rewrites this one declaration (cheap) instead of the whole stylesheet.
+const _papyrusSizeStyleEl = document.createElement('style');
+_papyrusSizeStyleEl.id = '__gc_papyrus_sizes';
+function applyPapyrusSizes() {
+    const lat = parseInt(SUITE_SETTINGS.papyrusLatinSize, 10) || 18;
+    const ara = parseInt(SUITE_SETTINGS.papyrusArabicSize, 10) || 22;
+    _papyrusSizeStyleEl.textContent =
+        ':root { --gc-latin-size: ' + lat + 'px; --gc-arabic-size: ' + ara + 'px; }';
+}
+applyPapyrusSizes();
+_appendToHead(_papyrusSizeStyleEl);
 
 function applyPapyrusFont() {
     if (SUITE_SETTINGS.papyrusFont) document.documentElement.classList.add('pyt-papyrus');
@@ -711,10 +759,15 @@ function createSettingsPanel() {
         return _el('div', { className: 'pyt-section-title', textContent: text });
     }
 
-    function selectInput(id, options, currentVal) {
+    function selectInput(id, options, currentVal, suffix) {
         const sel = _el('select', { className: 'pyt-select', id: id });
         options.forEach(function(v) {
-            const opt = _el('option', { value: String(v), textContent: v + (typeof v === 'number' && v >= 1 ? 'x' : '') });
+            // Default suffix: 'x' for numbers >= 1 (backward compat for speed/grid)
+            // Pass an explicit suffix (e.g. 'px', '') to override.
+            const sfx = (typeof suffix === 'string')
+                ? suffix
+                : (typeof v === 'number' && v >= 1 ? 'x' : '');
+            const opt = _el('option', { value: String(v), textContent: v + sfx });
             if (v == currentVal) opt.selected = true;
             sel.appendChild(opt);
         });
@@ -724,7 +777,7 @@ function createSettingsPanel() {
     const panel = _el('div', { id: 'pyt-settings-panel' });
 
     // Header
-    panel.appendChild(_el('h2', { textContent: '\u26A1 google-custom v4.1.0' }));
+    panel.appendChild(_el('h2', { textContent: '\u26A1 google-custom v4.2.0' }));
 
     // --- Region & Search ---
     panel.appendChild(sectionTitle('Region & Search'));
@@ -765,6 +818,10 @@ function createSettingsPanel() {
     panel.appendChild(sectionTitle('Appearance'));
     panel.appendChild(settingRow('Papyrus + Naskh Font (Alt+P)', 'Papyrus for Latin · KFGQPC Uthman Taha Naskh Regular for Arabic · bigger readable text',
         toggle('pyt-papyrus', SUITE_SETTINGS.papyrusFont)));
+    panel.appendChild(settingRow('Latin Font Size', 'Base size for Papyrus Latin text',
+        selectInput('gc-latin-size', [14, 16, 18, 20, 22, 24, 28, 32], SUITE_SETTINGS.papyrusLatinSize, 'px')));
+    panel.appendChild(settingRow('Arabic Font Size', 'Base size for KFGQPC Naskh Arabic text — applies to lang="ar" / dir="rtl" containers',
+        selectInput('gc-arabic-size', [16, 18, 20, 22, 24, 26, 28, 32, 36], SUITE_SETTINGS.papyrusArabicSize, 'px')));
 
     // --- Playback ---
     panel.appendChild(sectionTitle('Playback'));
@@ -821,6 +878,10 @@ function saveAndCloseSettings() {
     SUITE_SETTINGS.blockedSites = (document.getElementById('pyt-blocked-sites').value || '').trim();
     SUITE_SETTINGS.presetSocialMedia = document.getElementById('pyt-preset-social').checked;
     SUITE_SETTINGS.papyrusFont = document.getElementById('pyt-papyrus').checked;
+    var gcLatin = document.getElementById('gc-latin-size');
+    if (gcLatin) SUITE_SETTINGS.papyrusLatinSize = parseInt(gcLatin.value, 10) || 18;
+    var gcArabic = document.getElementById('gc-arabic-size');
+    if (gcArabic) SUITE_SETTINGS.papyrusArabicSize = parseInt(gcArabic.value, 10) || 22;
     SUITE_SETTINGS.autoTheater = document.getElementById('pyt-theater').checked;
     SUITE_SETTINGS.autoFullscreen = document.getElementById('pyt-fullscreen').checked;
     SUITE_SETTINGS.defaultSpeed = parseFloat(document.getElementById('pyt-speed').value) || 1;
@@ -839,6 +900,7 @@ function saveAndCloseSettings() {
 
     // Apply live changes (global)
     applyPapyrusFont();
+    if (typeof applyPapyrusSizes === 'function') applyPapyrusSizes();
 
     // Apply live changes if on YouTube
     if (ENV.isYouTube) {
@@ -1695,7 +1757,44 @@ ytCSS += 'html.pyt-focus-mode ytd-watch-flexy #primary.ytd-watch-flexy{max-width
 ytCSS += 'html.pyt-focus-mode .ytp-endscreen-content{display:none!important}';
 
 // --- Remaining Time Display ---
-ytCSS += '.pyt-remaining-time{display:inline-block;margin-left:8px;color:#aaa;font-size:12px;font-family:"Roboto",Arial,sans-serif;vertical-align:middle}';
+// --- Remaining Time HUD ---
+// Fighter-jet / car-dashboard style overlay: centered horizontally,
+// just below vertical center. Big monospaced glyphs with cyan glow.
+// pointer-events:none so it never intercepts player clicks.
+ytCSS += '#pyt-remaining-hud{' +
+    'position:fixed!important;' +
+    'left:50%!important;' +
+    'top:62%!important;' +
+    'transform:translate(-50%,-50%)!important;' +
+    'pointer-events:none!important;' +
+    'z-index:2147483600!important;' + // above the player chrome (2147483647 is the system max)
+    'font-family:"JetBrains Mono","Fira Code","Consolas","Menlo","Roboto Mono",ui-monospace,monospace!important;' +
+    'font-weight:600!important;' +
+    'font-size:clamp(28px,4.5vw,72px)!important;' +
+    'letter-spacing:0.06em!important;' +
+    'color:#7CFCFF!important;' +              // HUD cyan
+    'text-shadow:' +
+        '0 0 6px rgba(124,252,255,0.85),' +
+        '0 0 16px rgba(124,252,255,0.55),' +
+        '0 0 32px rgba(0,180,255,0.35),' +
+        '0 1px 0 rgba(0,0,0,0.6)!important;' + // subtle grounding shadow
+    'padding:6px 18px!important;' +
+    'border-radius:6px!important;' +
+    'background:rgba(0,0,0,0.18)!important;' +
+    'backdrop-filter:blur(2px)!important;' +
+    '-webkit-backdrop-filter:blur(2px)!important;' +
+    'opacity:0.92!important;' +
+    'transition:opacity 0.18s ease-out!important;' +
+    'user-select:none!important;' +
+    'white-space:nowrap!important;' +
+'}';
+// Hide the HUD when the in-page video isn\'t in a "we should show time" state
+ytCSS += '#pyt-remaining-hud.pyt-hud-hidden{opacity:0!important}';
+// Slight scale-down in fullscreen so it doesn\'t dominate the view
+ytCSS += ':fullscreen #pyt-remaining-hud,:-webkit-full-screen #pyt-remaining-hud{font-size:clamp(36px,3.5vw,84px)!important;top:65%!important;opacity:0.85!important}';
+// Keep an invisible marker class for the legacy in-player span (no longer used,
+// but defensive in case some other code references it).
+ytCSS += '.pyt-remaining-time{display:none!important}';
 
 ytStyleEl.textContent = ytCSS;
 _appendToHead(ytStyleEl);
@@ -1982,52 +2081,133 @@ function _scheduleFullscreenRetry() {
     }, 800);
 }
 
-// --- MODULE 9: Remaining Time Display ---
-// Uses event-driven updates (~4/sec during playback) instead of rAF (~60/sec)
-let _remainingTimeEl = null, _remainingTimeRAF = null, _remainingTimeInterval = null;
+// --- MODULE 9: Remaining Time HUD ---
+// Renders a fighter-jet / car-dashboard style overlay (cyan, glowing,
+// monospaced) centered horizontally and just below vertical center. The
+// HUD lives in the top-level document so it survives YouTube SPA
+// navigation; we only attach/detach video-event listeners on navigate.
+//
+// Update cadence: timeupdate (~4Hz during playback) + ratechange + 1Hz
+// fallback interval. Hidden during ads, on live streams, and when the
+// video is paused for >2s (so it never lingers stale-on-screen).
+let _remainingTimeEl = null;          // the HUD <div>
+let _remainingTimeAttached = null;    // <video> we have listeners on
+let _remainingTimeInterval = null;
+let _remainingPausedSince = 0;        // ms timestamp; 0 = not paused
+
+function _hudPreferredParent() {
+    // In fullscreen mode the browser only renders the fullscreen subtree, so
+    // a body-level fixed-position HUD becomes invisible. Re-parent into the
+    // fullscreen element (typically #movie_player on YouTube) when active.
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fsEl) return fsEl;
+    return document.body || document.documentElement;
+}
+
+function _ensureRemainingHud() {
+    let el = _remainingTimeEl;
+    if (!el || !el.isConnected) {
+        el = document.getElementById('pyt-remaining-hud');
+    }
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'pyt-remaining-hud';
+        el.classList.add('pyt-hud-hidden');
+    }
+    const want = _hudPreferredParent();
+    if (el.parentNode !== want) want.appendChild(el);
+    _remainingTimeEl = el;
+    return el;
+}
+
+function _onFullscreenChange() {
+    // Re-attach the HUD to whichever parent is currently appropriate, then
+    // re-render so it shows immediately on enter/exit.
+    if (_remainingTimeEl) {
+        const want = _hudPreferredParent();
+        if (_remainingTimeEl.parentNode !== want) want.appendChild(_remainingTimeEl);
+    }
+    updateRemainingTime();
+}
+document.addEventListener('fullscreenchange', _onFullscreenChange);
+document.addEventListener('webkitfullscreenchange', _onFullscreenChange);
+
+function _onRemainingPlay()  { _remainingPausedSince = 0; updateRemainingTime(); }
+function _onRemainingPause() { _remainingPausedSince = Date.now(); updateRemainingTime(); }
 
 function initRemainingTime() {
-    if (!SUITE_SETTINGS.remainingTime) return;
-    const tc = document.querySelector('.ytp-time-display');
-    if (!tc || _remainingTimeEl) return;
-    _remainingTimeEl = document.createElement('span');
-    _remainingTimeEl.className = 'pyt-remaining-time';
-    tc.appendChild(_remainingTimeEl);
-
-    // Listen to video events (fires ~4x/sec during playback, 0 when paused)
+    if (!SUITE_SETTINGS.remainingTime) { destroyRemainingTime(); return; }
+    _ensureRemainingHud();
     const vid = document.querySelector('video.html5-main-video');
-    if (vid) {
+    if (vid && _remainingTimeAttached !== vid) {
+        // Detach from previous video element if SPA replaced it.
+        if (_remainingTimeAttached) {
+            try {
+                _remainingTimeAttached.removeEventListener('timeupdate', updateRemainingTime);
+                _remainingTimeAttached.removeEventListener('ratechange', updateRemainingTime);
+                _remainingTimeAttached.removeEventListener('play',  _onRemainingPlay);
+                _remainingTimeAttached.removeEventListener('pause', _onRemainingPause);
+            } catch(e) {}
+        }
         vid.addEventListener('timeupdate', updateRemainingTime);
         vid.addEventListener('ratechange', updateRemainingTime);
+        vid.addEventListener('play',  _onRemainingPlay);
+        vid.addEventListener('pause', _onRemainingPause);
+        _remainingTimeAttached = vid;
+        _remainingPausedSince = vid.paused ? Date.now() : 0;
     }
-    // Fallback interval at 1Hz for edge cases (e.g. video element replaced)
-    _remainingTimeInterval = setInterval(updateRemainingTime, 1000);
+    if (!_remainingTimeInterval) _remainingTimeInterval = setInterval(updateRemainingTime, 1000);
     updateRemainingTime();
 }
 
 function updateRemainingTime() {
-    if (!_remainingTimeEl) return;
+    const el = _remainingTimeEl;
+    if (!el) return;
     const vid = document.querySelector('video.html5-main-video');
-    if (!vid || !vid.duration || isNaN(vid.duration)) { _remainingTimeEl.textContent = ''; return; }
+    function hide() {
+        el.classList.add('pyt-hud-hidden');
+        el.textContent = '';
+    }
+    if (location.pathname !== '/watch')                              return hide();
+    if (!vid || !vid.duration || isNaN(vid.duration))                return hide();
+    if (document.querySelector('.ad-showing'))                       return hide();
     const td = document.querySelector('.ytp-time-display');
-    if (td && td.classList.contains('ytp-live')) { _remainingTimeEl.textContent = ''; return; }
-    if (document.querySelector('.ad-showing')) { _remainingTimeEl.textContent = ''; return; }
-    const remaining = (vid.duration - vid.currentTime) / (vid.playbackRate || 1);
-    const h = Math.floor(remaining / 3600), m = Math.floor((remaining % 3600) / 60), s = Math.floor(remaining % 60);
-    _remainingTimeEl.textContent = '(-' + (h > 0 ? h + ':' : '') + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + ')';
+    if (td && td.classList.contains('ytp-live'))                     return hide();
+    // Hide if paused for more than 2s (likely user is reading something on-screen)
+    if (vid.paused && _remainingPausedSince && (Date.now() - _remainingPausedSince) > 2000) {
+        return hide();
+    }
+    const remaining = Math.max(0, (vid.duration - vid.currentTime) / (vid.playbackRate || 1));
+    if (remaining < 1) return hide();
+    const h = Math.floor(remaining / 3600);
+    const m = Math.floor((remaining % 3600) / 60);
+    const s = Math.floor(remaining % 60);
+    const text = '-' + (h > 0 ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    if (el.textContent !== text) el.textContent = text;
+    el.classList.remove('pyt-hud-hidden');
 }
 
 function destroyRemainingTime() {
-    // Clean up event listeners
-    const vid = document.querySelector('video.html5-main-video');
-    if (vid) {
-        vid.removeEventListener('timeupdate', updateRemainingTime);
-        vid.removeEventListener('ratechange', updateRemainingTime);
+    if (_remainingTimeAttached) {
+        try {
+            _remainingTimeAttached.removeEventListener('timeupdate', updateRemainingTime);
+            _remainingTimeAttached.removeEventListener('ratechange', updateRemainingTime);
+            _remainingTimeAttached.removeEventListener('play',  _onRemainingPlay);
+            _remainingTimeAttached.removeEventListener('pause', _onRemainingPause);
+        } catch(e) {}
+        _remainingTimeAttached = null;
     }
-    if (_remainingTimeEl && _remainingTimeEl.parentNode) _remainingTimeEl.parentNode.removeChild(_remainingTimeEl);
-    _remainingTimeEl = null;
-    if (_remainingTimeRAF) { cancelAnimationFrame(_remainingTimeRAF); _remainingTimeRAF = null; }
     if (_remainingTimeInterval) { clearInterval(_remainingTimeInterval); _remainingTimeInterval = null; }
+    if (_remainingTimeEl) {
+        _remainingTimeEl.classList.add('pyt-hud-hidden');
+        _remainingTimeEl.textContent = '';
+        // Keep the node (cheap) so re-init is a no-op; remove only if
+        // remainingTime feature is permanently disabled in settings.
+        if (!SUITE_SETTINGS.remainingTime && _remainingTimeEl.parentNode) {
+            _remainingTimeEl.parentNode.removeChild(_remainingTimeEl);
+            _remainingTimeEl = null;
+        }
+    }
 }
 
 // --- MODULE 10: Focus Mode ---
