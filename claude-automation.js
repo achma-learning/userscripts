@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Automation – Scheduler + Autonomous Queue
 // @namespace    https://github.com/achma-learning/userscripts
-// @version      9.0.0
+// @version      9.0.1
 // @description  Schedule a single message or run an autonomous queue of prompts; auto-resumes after usage-limit resets, randomised delays, progress saved across reloads.
 // @author       achma-learning
 // @license      MIT
@@ -10,6 +10,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @connect      *
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -43,23 +44,42 @@
     }
 
     // ─── Reset-clock detection ─────────────────────────────────────────────────
+    // Group 3 is an optional AM/PM marker: English claude.ai shows "reset at 5:00 PM",
+    // and reading that as 05:00 schedules the send 12 h off.
+    const AMPM = '(?:\\s*([ap])\\.?\\s*m\\b\\.?)?';
     const CLOCK_RES = [
-        /r[ée]initialisation[^0-9]*(\d{1,2}):(\d{2})/i,
-        /resets?\s+at\s+(\d{1,2}):(\d{2})/i,
-        /resets?\s+(\d{1,2}):(\d{2})/i,
-        /usage\s+limit[^0-9]*(\d{1,2}):(\d{2})/i,
+        new RegExp('r[ée]initialisation[^0-9]*(\\d{1,2})[:h](\\d{2})' + AMPM, 'i'),
+        new RegExp('resets?\\s+at\\s+(\\d{1,2}):(\\d{2})' + AMPM, 'i'),
+        new RegExp('resets?\\s+(\\d{1,2}):(\\d{2})' + AMPM, 'i'),
+        new RegExp('usage\\s+limit[^0-9]*(\\d{1,2}):(\\d{2})' + AMPM, 'i'),
     ];
     const LIMIT_RE = /r[ée]initialisatio|resets?|usage.?limit|limite de messages/i;
+
+    // Text that must never count as a limit banner: this script's own UI (the
+    // "Auto from reset timer" label and "↺ Reset" button made every page look
+    // rate-limited, so scheduled sends were retried and the queue stalled at
+    // message 1), the prompt box, and chat messages (a prompt that says "reset"
+    // is not a usage limit). Message selectors are best-effort; absent ones are harmless.
+    const IGNORE_SEL = `#${PANEL_ID},#${MODAL_ID},#${TOAST_ID},[contenteditable="true"],textarea,` +
+        '[data-testid="user-message"],[data-is-streaming],.font-claude-message,.font-user-message';
+
+    function isIgnored(node) {
+        const el = node.nodeType === 1 ? node : node.parentElement;
+        return !!(el && el.closest(IGNORE_SEL));
+    }
 
     function findLimitText() {
         const seats = document.querySelectorAll(
             '[data-color-context="warning"],[role="alert"],[data-testid*="limit"],[class*="usage"],[class*="limit"]'
         );
         for (const el of seats) {
+            if (isIgnored(el)) continue;
             const t = el.innerText || '';
             if (LIMIT_RE.test(t)) return t;
         }
-        const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+            acceptNode: n => isIgnored(n) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+        });
         let n;
         while ((n = w.nextNode())) {
             if (LIMIT_RE.test(n.textContent)) return n.textContent;
@@ -73,7 +93,12 @@
         for (const re of CLOCK_RES) {
             const m = text.match(re);
             if (m) {
-                const h = +m[1], min = +m[2];
+                let h = +m[1];
+                const min = +m[2], ap = (m[3] || '').toLowerCase();
+                if (ap) {
+                    if (h < 1 || h > 12) continue;
+                    h = (h % 12) + (ap === 'p' ? 12 : 0);
+                }
                 if (h >= 0 && h <= 23 && min >= 0 && min <= 59) return { h, min };
             }
         }

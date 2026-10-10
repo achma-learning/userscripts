@@ -36,7 +36,9 @@ Route-fulfilling a stub page at the real hostname is the trick — the script ga
 - **Language + runtime:** Plain ES2020 JavaScript running in the browser. No transpiler, no TypeScript, no `.nvmrc` — nothing in this repo is a Node project.
 - **Framework / key libraries:** None. Zero dependencies is deliberate (`@grant none`, no `@require`).
 - **What kind of project:** Userscript (Tampermonkey / Violentmonkey / Greasemonkey). Single file, 3,571 lines.
-- **External services:** Exactly one, and it's opt-in: `sponsor.ajay.app` (SponsorBlock), off by default. Uses the hash-prefix endpoint, so only 4 hex characters of `SHA-256(videoId)` leave the browser.
+- **External services:**
+  - `sponsor.ajay.app` (SponsorBlock) — opt-in, off by default. Uses the hash-prefix endpoint, so only 4 hex characters of `SHA-256(videoId)` leave the browser.
+  - `youtube-proxy.zerody.one` + `ny.4everproxy.com` — Module 5 (age bypass, inherited from upstream) contacts these only when you open an age-restricted video.
 - **Key metadata** (lines 5–10): `@version 4.0.0` · `@license MIT` · `@run-at document-start` · `@grant none` · `@noframes` · 199 `@match` lines (every Google ccTLD plus youtube.com, youtube-nocookie.com, music.youtube.com).
 
 ## 4. Code Map (The Important Files Only)
