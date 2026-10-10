@@ -2,7 +2,7 @@
 // @name         google-custom
 // @namespace    google-custom
 // @description  v4 minimalist + power-user suite: Google anti-tracking + cleanURL + endless scroll + search blocklist + YouTube old-UI + anti-shorts + hardened ad skip/mute/speed + age bypass + region setter + grid + focus mode + remaining time + playback resume + Drive/Gmail link unwrap
-// @version      4.3.0
+// @version      4.3.1
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=YouTube.com
 // @license      MIT
 // @run-at       document-start
@@ -239,6 +239,20 @@
  * ║  FEATURE:   Settings Panel (Ctrl+?) + Floating Gear Button      ║
  * ╚══════════════════════════════════════════════════════════════════╝
  *
+ * v4.3.1 — Bug fixes (ported from the Privacy Suite v4.0.0):
+ *
+ *  FIXED   — MODULE 1 was dead on every page: setupAggresiveUglyLinkPreventer()
+ *            read `forceNoReferrer` before its `let` declaration (TDZ
+ *            ReferenceError, swallowed by _safeRun), and every mousedown then
+ *            threw on `noping`. Declarations now come first.
+ *  FIXED   — Shorts redirect built /watch?v=ID?feature=share for any Shorts
+ *            URL with a query string. Now parses the URL properly.
+ *  FIXED   — Injected before <html> existed (Tampermonkey "instant"
+ *            document-start), the script crashed on its first append and
+ *            every module was dead. _appendToHead() now queues nodes, the
+ *            <html> class toggles wait via _whenRoot(), and waitForElm()
+ *            observes `document` instead of a possibly-null root.
+ *
  * v4.3.0 — Two-column Google Search + HUD visuals:
  *
  *  NEW     — MODULE 15: Google Search two-column layout
@@ -472,8 +486,37 @@ function _safeRun(label, fn) {
     catch (e) { console.error('[PrivacySuite] ' + label + ' error:', e); }
 }
 
+// At @run-at document-start neither <head> nor even <html> is guaranteed to
+// exist yet (Tampermonkey "instant" injection lands before the parser has
+// created <html>). Appending blindly throws there and kills every module below
+// this line, so queue instead and flush the moment a root appears.
+// Same fix as the Privacy Suite v4.0.0.
+const _pendingHeadNodes = [];
+let _headFlushTimer = null;
+
 function _appendToHead(el) {
-    (document.head || document.documentElement).appendChild(el);
+    const root = document.head || document.documentElement;
+    if (root) { root.appendChild(el); return true; }
+    if (_pendingHeadNodes.indexOf(el) === -1) _pendingHeadNodes.push(el);
+    _flushHeadQueue();
+    return false;
+}
+
+// Run fn once <html> exists (see _appendToHead for why it may not yet).
+function _whenRoot(fn) {
+    if (document.documentElement) fn();
+    else setTimeout(function() { _whenRoot(fn); }, 10);
+}
+
+function _flushHeadQueue() {
+    if (_headFlushTimer) return;
+    _headFlushTimer = setInterval(function() {
+        const root = document.head || document.documentElement;
+        if (!root) return;
+        while (_pendingHeadNodes.length) root.appendChild(_pendingHeadNodes.shift());
+        clearInterval(_headFlushTimer);
+        _headFlushTimer = null;
+    }, 10);
 }
 
 // ============================================================
@@ -747,8 +790,7 @@ applyHudVisuals();
 _appendToHead(_hudVisualsStyleEl);
 
 function applyPapyrusFont() {
-    if (SUITE_SETTINGS.papyrusFont) document.documentElement.classList.add('pyt-papyrus');
-    else document.documentElement.classList.remove('pyt-papyrus');
+    _whenRoot(function() { document.documentElement.classList.toggle('pyt-papyrus', !!SUITE_SETTINGS.papyrusFont); });
 }
 
 // Apply immediately (before DOM ready — class on <html> is available at document-start)
@@ -756,8 +798,7 @@ applyPapyrusFont();
 
 // --- Google Two-Column Layout class toggle (hoisted; CSS injected by Module 15) ---
 function applyGoogleTwoColumn() {
-    if (SUITE_SETTINGS.googleTwoColumn) document.documentElement.classList.add('gc-2col');
-    else document.documentElement.classList.remove('gc-2col');
+    _whenRoot(function() { document.documentElement.classList.toggle('gc-2col', !!SUITE_SETTINGS.googleTwoColumn); });
 }
 applyGoogleTwoColumn();
 
@@ -1610,11 +1651,17 @@ document.addEventListener('click', handleClick, true);
 let scriptCspNonce;
 let needsCspNonce = typeof browser !== 'undefined';
 const preferenceObservers = [];
-setupAggresiveUglyLinkPreventer();
 
+// Must be declared BEFORE setupAggresiveUglyLinkPreventer() runs: it reads
+// forceNoReferrer synchronously via getReferrerPolicy(). With `let`, a read
+// above the declaration is a TDZ ReferenceError that _safeRun swallows —
+// which silently killed this whole module (and made every mousedown throw on
+// `noping`). Same fix as the Privacy Suite v4.0.0.
 let forceNoReferrer = true;
 let noping = true;
 let stripAiOverviews = false;
+
+setupAggresiveUglyLinkPreventer();
 
 if (typeof chrome == 'object' && chrome.storage) {
     (chrome.storage.sync || chrome.storage.local).get({
@@ -1989,7 +2036,24 @@ ytStyleEl.textContent = ytCSS;
 _appendToHead(ytStyleEl);
 
 // *** MODULE 3: Shorts Redirect ***
-function redirectShorts() { if (location.pathname.indexOf('/shorts/') !== -1) location.replace(location.href.replace('/shorts/', '/watch?v=')); }
+// Parse the URL instead of href.replace('/shorts/','/watch?v='): the string
+// replace turned /shorts/ID?feature=share into /watch?v=ID?feature=share —
+// an unloadable video id.
+function shortsUrlToWatch(href) {
+    let url;
+    try { url = new URL(href, location.href); } catch (e) { return null; }
+    const m = url.pathname.match(/^\/shorts\/([^/?#]+)/);
+    if (!m) return null;
+    const watch = new URL('/watch', url.origin);
+    watch.searchParams.set('v', m[1]);
+    // Carry over the only parameters that mean anything on a watch page.
+    const t = url.searchParams.get('t');
+    if (t) watch.searchParams.set('t', t);
+    const list = url.searchParams.get('list');
+    if (list) watch.searchParams.set('list', list);
+    return watch.href;
+}
+function redirectShorts() { const target = shortsUrlToWatch(location.href); if (target) location.replace(target); }
 redirectShorts();
 let _lastHref = location.href;
 function onYTNavigate() { if (_lastHref !== location.href) { _lastHref = location.href; redirectShorts(); } }
@@ -2401,8 +2465,7 @@ function destroyRemainingTime() {
 
 // --- MODULE 10: Focus Mode ---
 function applyFocusMode() {
-    if (SUITE_SETTINGS.focusMode) document.documentElement.classList.add('pyt-focus-mode');
-    else document.documentElement.classList.remove('pyt-focus-mode');
+    _whenRoot(function() { document.documentElement.classList.toggle('pyt-focus-mode', !!SUITE_SETTINGS.focusMode); });
 }
 
 // --- YouTube-specific keyboard shortcuts ---
@@ -2685,7 +2748,7 @@ if (oldStyleCSS) {
 }
 
 function restoreTrending() { try { var d = {"navigationEndpoint":{"commandMetadata":{"webCommandMetadata":{"url":"/feed/explore","webPageType":"WEB_PAGE_TYPE_BROWSE","apiUrl":"/youtubei/v1/browse"}},"browseEndpoint":{"browseId":"FEtrending"}},"icon":{"iconType":"EXPLORE"},"formattedTitle":{"simpleText":"Explore"},"accessibility":{"accessibilityData":{"label":"Explore"}},"isPrimary":true}; var g = document.querySelector('#items > ytd-guide-entry-renderer:nth-child(2)'); if (g) g.data = d; var m = document.querySelector('#items > ytd-mini-guide-entry-renderer:nth-child(2)'); if (m) m.data = d; } catch(e) {} }
-function waitForElm(sel) { return new Promise(function(resolve) { if (document.querySelector(sel)) return resolve(); var obs = new MutationObserver(function() { if (document.querySelector(sel)) { resolve(); obs.disconnect(); } }); obs.observe(document.body || document.documentElement, { childList: true, subtree: true }); }); }
+function waitForElm(sel) { return new Promise(function(resolve) { if (document.querySelector(sel)) return resolve(); var obs = new MutationObserver(function() { if (document.querySelector(sel)) { resolve(); obs.disconnect(); } }); obs.observe(document, { childList: true, subtree: true }); }); }
 waitForElm("#items.ytd-guide-section-renderer").then(restoreTrending);
 waitForElm("#items.ytd-mini-guide-section-renderer").then(restoreTrending);
 
@@ -2708,8 +2771,7 @@ _safeRun('Module5:AgeBypass', function() {
         // Inject into page context via script element instead of eval()
         const _s = document.createElement('script');
         _s.textContent = '(' + iife.toString() + ')(true);';
-        document.documentElement.appendChild(_s);
-        _s.remove();
+        if (_appendToHead(_s)) _s.remove(); // queued nodes run (and stay) when flushed
         return;
     }
 
